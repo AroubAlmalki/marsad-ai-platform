@@ -2188,7 +2188,7 @@ st.markdown(
 )
 
 # Main platform banner displayed directly below the title and subtitle.
-st.image("marsad_banner.png", width="stretch")
+#st.image("marsad_banner.png", width="stretch")
 
 default_data = get_sample_data()
 
