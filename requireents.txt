@@ -1,6 +1,6 @@
 Streamlit
 Pandas
-Numpy
+numpy
 Plotly
-Openpyxi
+openpyxi
 scikit-learn
