@@ -4,4 +4,3 @@ Numpy
 Plotly
 Openpyxi
 scikit-learn
-
