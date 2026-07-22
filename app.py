@@ -1752,50 +1752,35 @@ def predict_project_delay(input_values: Dict[str, float]) -> Dict[str, object]:
 
 
 # =========================================================
-# LIVE DIGITAL TWIN, SECTOR INTELLIGENCE, AND AI ASSISTANT
+# LIVE DIGITAL TWIN, PROJECT VALUE INTELLIGENCE, AND AI ASSISTANT
 # =========================================================
-SECTOR_CONFIG = {
-    "Construction": {
-        "asset": "Construction Project",
-        "kpis": ["Progress %", "Workforce Availability %", "Equipment Health %", "Energy Load %"],
-        "risk_focus": "schedule, labor, procurement, equipment, weather, and quality",
-    },
-    "Energy": {
-        "asset": "Energy Facility",
-        "kpis": ["Generation Availability %", "Grid Load %", "Equipment Health %", "Energy Efficiency %"],
-        "risk_focus": "generation availability, grid demand, equipment reliability, fuel, and safety",
-    },
-    "Manufacturing": {
-        "asset": "Manufacturing Plant",
-        "kpis": ["Production Rate %", "Quality Yield %", "Equipment Health %", "Energy Efficiency %"],
-        "risk_focus": "throughput, downtime, quality yield, maintenance, inventory, and energy",
-    },
+PROJECT_CONFIG = {
+    "asset": "Construction Project",
+    "kpis": [
+        "Progress %",
+        "Workforce Availability %",
+        "Equipment Health %",
+        "Quality Compliance %",
+    ],
+    "risk_focus": (
+        "schedule, lifecycle cost, labor, procurement, equipment, "
+        "weather, quality, and function preservation"
+    ),
 }
 
 
-def create_live_twin_data(sector: str, points: int = 48) -> pd.DataFrame:
-    """Create a realistic timestamped telemetry stream for the demonstration twin."""
-    rng = np.random.default_rng(42 + list(SECTOR_CONFIG).index(sector))
+def create_live_twin_data(points: int = 48) -> pd.DataFrame:
+    """Create a realistic timestamped project telemetry stream for the demonstration twin."""
+    rng = np.random.default_rng(42)
     timestamps = pd.date_range(
         end=pd.Timestamp.now().floor("min"), periods=points, freq="30min"
     )
     base_progress = np.linspace(38, 44, points)
 
-    if sector == "Energy":
-        primary_name = "Generation Availability %"
-        secondary_name = "Grid Load %"
-        primary = np.clip(92 + rng.normal(0, 2.2, points), 70, 100)
-        secondary = np.clip(74 + 12 * np.sin(np.linspace(0, 3.5, points)) + rng.normal(0, 3, points), 35, 100)
-    elif sector == "Manufacturing":
-        primary_name = "Production Rate %"
-        secondary_name = "Quality Yield %"
-        primary = np.clip(86 + rng.normal(0, 4.0, points), 55, 105)
-        secondary = np.clip(94 + rng.normal(0, 1.8, points), 80, 100)
-    else:
-        primary_name = "Progress %"
-        secondary_name = "Workforce Availability %"
-        primary = np.clip(base_progress + rng.normal(0, 0.35, points), 0, 100)
-        secondary = np.clip(84 + rng.normal(0, 4.5, points), 55, 105)
+    primary_name = "Progress %"
+    secondary_name = "Workforce Availability %"
+    primary = np.clip(base_progress + rng.normal(0, 0.35, points), 0, 100)
+    secondary = np.clip(84 + rng.normal(0, 4.5, points), 55, 105)
 
     return pd.DataFrame(
         {
@@ -1803,7 +1788,7 @@ def create_live_twin_data(sector: str, points: int = 48) -> pd.DataFrame:
             primary_name: primary,
             secondary_name: secondary,
             "Equipment Health %": np.clip(90 + rng.normal(0, 3.2, points), 60, 100),
-            "Energy Efficiency %": np.clip(82 + rng.normal(0, 4.0, points), 50, 100),
+            "Quality Compliance %": np.clip(88 + rng.normal(0, 3.5, points), 55, 100),
             "Temperature C": np.clip(36 + rng.normal(0, 4.5, points), 18, 55),
             "Vibration Index": np.clip(0.34 + rng.normal(0, 0.09, points), 0.05, 0.95),
             "Open Alerts": rng.integers(0, 5, points),
@@ -1836,19 +1821,19 @@ def fetch_live_json(url: str) -> pd.DataFrame:
     return normalize_live_twin_columns(pd.DataFrame(payload))
 
 
-def analyze_live_twin(frame: pd.DataFrame, sector: str) -> Dict[str, object]:
+def analyze_live_twin(frame: pd.DataFrame) -> Dict[str, object]:
     frame = normalize_live_twin_columns(frame)
     latest = frame.iloc[-1]
     numeric = frame.select_dtypes(include=[np.number])
 
     equipment_health = safe_float(latest.get("Equipment Health %", 85), 85)
-    energy_efficiency = safe_float(latest.get("Energy Efficiency %", 80), 80)
+    quality_compliance = safe_float(latest.get("Quality Compliance %", 85), 85)
     vibration = safe_float(latest.get("Vibration Index", 0.3), 0.3)
     open_alerts = safe_float(latest.get("Open Alerts", 0), 0)
 
     anomaly_score = np.clip(
         0.34 * max(0, 85 - equipment_health) / 35
-        + 0.24 * max(0, 78 - energy_efficiency) / 35
+        + 0.24 * max(0, 82 - quality_compliance) / 35
         + 0.26 * max(0, vibration - 0.35) / 0.55
         + 0.16 * min(open_alerts / 5, 1),
         0,
@@ -1876,8 +1861,8 @@ def analyze_live_twin(frame: pd.DataFrame, sector: str) -> Dict[str, object]:
         actions.append("Inspect the weakest equipment and create a condition-based maintenance work order.")
     if vibration > 0.55:
         actions.append("Escalate the vibration anomaly and reduce operating load until inspection is complete.")
-    if energy_efficiency < 75:
-        actions.append("Run an energy-loss review and compare operating settings against the best recent period.")
+    if quality_compliance < 80:
+        actions.append("Review quality nonconformities and protect the required project functions before approving changes.")
     if open_alerts >= 3:
         actions.append("Prioritize and assign owners to the open digital-twin alerts before the next shift.")
     if not actions:
@@ -1888,33 +1873,23 @@ def analyze_live_twin(frame: pd.DataFrame, sector: str) -> Dict[str, object]:
         "Status": status,
         "Anomaly Score": anomaly_score * 100,
         "Equipment Health %": equipment_health,
-        "Energy Efficiency %": energy_efficiency,
+        "Quality Compliance %": quality_compliance,
         "Open Alerts": int(open_alerts),
         "Trends": pd.DataFrame(trend_rows),
         "Actions": actions,
-        "Sector": sector,
     }
 
 
-def build_sector_intelligence(sector: str, live_result: Dict[str, object], health: Dict[str, float]) -> Dict[str, object]:
-    if sector == "Energy":
-        priorities = [
-            "Protect generation availability and critical electrical assets.",
-            "Reduce technical losses and peak-load exposure.",
-            "Compare maintenance alternatives by outage cost and lifecycle value.",
-        ]
-    elif sector == "Manufacturing":
-        priorities = [
-            "Protect production throughput and first-pass quality yield.",
-            "Predict equipment downtime before it interrupts the line.",
-            "Optimize inventory, maintenance, energy, and changeover decisions.",
-        ]
-    else:
-        priorities = [
-            "Protect critical-path activities and supplier lead times.",
-            "Optimize lifecycle value of materials and systems.",
-            "Coordinate labor, equipment, cost, weather, and quality risks.",
-        ]
+def build_project_value_intelligence(
+    live_result: Dict[str, object],
+    health: Dict[str, float],
+) -> Dict[str, object]:
+    priorities = [
+        "Protect critical-path activities and supplier lead times.",
+        "Optimize lifecycle value of materials and project systems.",
+        "Preserve required functions while reducing unnecessary cost.",
+        "Coordinate labor, equipment, cost, weather, quality, and procurement risks.",
+    ]
 
     readiness = np.clip(
         0.55 * (100 - safe_float(live_result["Anomaly Score"]))
@@ -1923,17 +1898,16 @@ def build_sector_intelligence(sector: str, live_result: Dict[str, object], healt
         100,
     )
     return {
-        "Sector": sector,
-        "Asset": SECTOR_CONFIG[sector]["asset"],
+        "Project Type": "Construction Project",
+        "Methodology": "Value Engineering",
         "Readiness %": readiness,
-        "Risk Focus": SECTOR_CONFIG[sector]["risk_focus"],
+        "Risk Focus": PROJECT_CONFIG["risk_focus"],
         "Priorities": priorities,
     }
 
 
 def answer_marsad_question(
     question: str,
-    sector: str,
     health: Dict[str, float],
     best_material: pd.Series,
     risk_results: pd.DataFrame,
@@ -1945,50 +1919,45 @@ def answer_marsad_question(
     highest_risk = risk_results.iloc[0]
     parts = []
 
-    if any(word in q for word in ["تأخير", "delay", "schedule"]):
+    if any(word in q for word in ["delay", "schedule", "late", "overrun"]):
         parts.append(
-            f"احتمال تجاوز الجدول الحالي هو {health['Schedule Overrun Probability']:.1f}%، "
-            f"والتأخير المرجح من سجل المخاطر {health['Expected Delay Days']:.1f} يوم."
+            f"The current schedule-overrun probability is {health['Schedule Overrun Probability']:.1f}%, "
+            f"with {health['Expected Delay Days']:.1f} expected delay days from the risk register."
         )
         if ml_result:
             parts.append(
-                f"نموذج التعلم الآلي يتوقع احتمال تأخير {ml_result['Delay Probability']:.1f}% "
-                f"وبنحو {ml_result['Predicted Delay Days']:.1f} يوم."
+                f"The machine-learning model predicts a {ml_result['Delay Probability']:.1f}% delay probability "
+                f"and approximately {ml_result['Predicted Delay Days']:.1f} delay days."
             )
-    if any(word in q for word in ["خطر", "مخاطر", "risk"]):
+    if any(word in q for word in ["risk", "threat", "exposure"]):
         parts.append(
-            f"أعلى خطر حالي هو: {highest_risk['Risk Description']}، "
-            f"ومؤشره {highest_risk['Proactive Risk Index']:.1f}/100. "
-            f"الإجراء المقترح: {highest_risk['Recommended Response']}"
+            f"The highest current risk is {highest_risk['Risk Description']}, "
+            f"with a proactive risk index of {highest_risk['Proactive Risk Index']:.1f}/100. "
+            f"Recommended response: {highest_risk['Recommended Response']}"
         )
-    if any(word in q for word in ["مادة", "مواد", "material", "بديل"]):
+    if any(word in q for word in ["material", "alternative", "option"]):
         parts.append(
-            f"البديل الأعلى قيمة حاليًا هو {best_material['Material Name']} "
-            f"بمؤشر قيمة {best_material['AI Value Index']:.1f}/100 "
-            f"وتكلفة دورة حياة {best_material['Lifecycle Cost SAR']:,.0f} ريال."
+            f"The highest-value current alternative is {best_material['Material Name']}, "
+            f"with an AI Value Index of {best_material['AI Value Index']:.1f}/100 "
+            f"and a lifecycle cost of SAR {best_material['Lifecycle Cost SAR']:,.0f}."
         )
-    if any(word in q for word in ["توأم", "حي", "live", "sensor", "حساس"]):
+    if any(word in q for word in ["digital twin", "live", "sensor", "telemetry"]):
         parts.append(
-            f"حالة التوأم الرقمي الحية لقطاع {sector}: {live_result['Status']}، "
-            f"ومؤشر الشذوذ {live_result['Anomaly Score']:.1f}/100، "
-            f"وصحة المعدات {live_result['Equipment Health %']:.1f}%."
+            f"The live project digital-twin status is {live_result['Status']}, "
+            f"with an anomaly score of {live_result['Anomaly Score']:.1f}/100 "
+            f"and equipment health of {live_result['Equipment Health %']:.1f}%."
         )
-    if any(word in q for word in ["تكلفة", "ميزانية", "cost", "budget"]):
+    if any(word in q for word in ["cost", "budget", "financial", "expense"]):
         parts.append(
-            f"احتمال تجاوز الميزانية {health['Budget Overrun Probability']:.1f}%، "
-            f"والخسارة المالية المتوقعة باحتمالات المخاطر {health['Expected Loss SAR']:,.0f} ريال."
+            f"The budget-overrun probability is {health['Budget Overrun Probability']:.1f}%, "
+            f"with an expected risk-adjusted financial loss of SAR {health['Expected Loss SAR']:,.0f}."
         )
-    if any(word in q for word in ["طاقة", "energy", "مصنع", "تصنيع", "manufacturing"]):
-        parts.append(
-            f"وضع القطاع المحدد هو {sector}. تركّز المنصة على {SECTOR_CONFIG[sector]['risk_focus']}."
-        )
-
     if not parts:
         parts.append(
-            f"ملخص مرصد: نجاح المشروع {health['Project Success Probability']:.1f}%، "
-            f"الخطر الكلي {health['Overall Risk Index']:.1f}/100، "
-            f"وحالة التوأم الرقمي {live_result['Status']}. "
-            "اسأليني عن التأخير، المخاطر، المواد، التكلفة، التوأم الرقمي، الطاقة أو التصنيع."
+            f"MARSAD summary: project success probability is {health['Project Success Probability']:.1f}%, "
+            f"overall risk is {health['Overall Risk Index']:.1f}/100, "
+            f"and the digital-twin status is {live_result['Status']}. "
+            "Ask about delay, risks, materials, costs, the digital twin, or Value Engineering decisions."
         )
 
     return "\n\n".join(parts)
@@ -2526,18 +2495,14 @@ st.markdown(
 )
 
 # Main platform banner displayed directly below the title and subtitle.
-st.image("marsad_banner.png", width="stretch")
+#st.image("marsad_banner.png", width="stretch")
 
 default_data = get_sample_data()
 
 with st.sidebar:
     st.header("Data Management")
 
-    selected_sector = st.selectbox(
-        "Operating Sector",
-        ["Construction", "Energy", "Manufacturing"],
-        help="The same MARSAD engine adapts its live KPIs and recommendations to the selected sector.",
-    )
+    st.info("Project Management — Value Engineering")
 
     template_file = create_excel_template(default_data)
 
@@ -2696,12 +2661,12 @@ recommendations = generate_recommendations(
     schedule_results=schedule_results,
 )
 
-live_state_key = f"marsad_live_data_{selected_sector}"
+live_state_key = "marsad_project_live_data"
 if live_state_key not in st.session_state:
-    st.session_state[live_state_key] = create_live_twin_data(selected_sector)
+    st.session_state[live_state_key] = create_live_twin_data()
 live_twin_data = st.session_state[live_state_key]
-live_result = analyze_live_twin(live_twin_data, selected_sector)
-sector_intelligence = build_sector_intelligence(selected_sector, live_result, health)
+live_result = analyze_live_twin(live_twin_data)
+project_intelligence = build_project_value_intelligence(live_result, health)
 
 
 st.markdown(
@@ -2782,7 +2747,7 @@ tabs = st.tabs(
         "AI Value Engineer",
         "ML Delay Predictor",
         "Live Digital Twin",
-        "Sector Intelligence",
+        "Project Value Intelligence",
         "MARSAD AI Assistant",
         "Reports",
     ]
@@ -4490,7 +4455,7 @@ with tabs[9]:
         """
         <div class="section-banner">
             <b>Live Digital Twin Connector</b><br>
-            Connect timestamped BIM, IoT, equipment, production, or energy telemetry
+            Connect timestamped BIM, IoT, equipment, workforce, schedule, or site telemetry
             to MARSAD. The MVP supports a live simulator, CSV upload, and JSON API endpoint.
         </div>
         """,
@@ -4505,9 +4470,7 @@ with tabs[9]:
     source_col_1, source_col_2, source_col_3 = st.columns(3)
     with source_col_1:
         if st.button("Refresh Live Simulator", use_container_width=True):
-            st.session_state[live_state_key] = create_live_twin_data(
-                selected_sector, points=48
-            )
+            st.session_state[live_state_key] = create_live_twin_data(points=48)
             st.rerun()
     with source_col_2:
         twin_csv = st.file_uploader(
@@ -4541,7 +4504,7 @@ with tabs[9]:
                 st.error(f"Unable to connect to the endpoint: {error}")
 
     live_twin_data = st.session_state[live_state_key]
-    live_result = analyze_live_twin(live_twin_data, selected_sector)
+    live_result = analyze_live_twin(live_twin_data)
 
     live_1, live_2, live_3, live_4 = st.columns(4)
     live_1.metric("Twin Status", live_result["Status"])
@@ -4572,60 +4535,66 @@ with tabs[9]:
     st.download_button(
         "Download Current Twin Telemetry",
         data=live_twin_data.to_csv(index=False).encode("utf-8"),
-        file_name=f"marsad_{selected_sector.lower()}_live_twin.csv",
+        file_name="marsad_project_live_twin.csv",
         mime="text/csv",
         use_container_width=True,
     )
 
 
 # =========================================================
-# SECTOR INTELLIGENCE
+# PROJECT VALUE INTELLIGENCE
 # =========================================================
 with tabs[10]:
     st.markdown(
-        f"""
+        """
         <div class="section-banner">
-            <b>MARSAD for {selected_sector}</b><br>
-            The common Value Engineering core is adapted to construction,
-            energy facilities, and manufacturing plants.
+            <b>Project Value Intelligence</b><br>
+            A project-management view that connects Value Engineering priorities
+            with schedule, lifecycle cost, function preservation, procurement,
+            resources, quality, and risk.
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    sector_1, sector_2, sector_3 = st.columns(3)
-    sector_1.metric("Selected Sector", sector_intelligence["Sector"])
-    sector_2.metric("Asset Type", sector_intelligence["Asset"])
-    sector_3.metric("Operational Readiness", f"{sector_intelligence['Readiness %']:.1f}%")
+    project_1, project_2, project_3 = st.columns(3)
+    project_1.metric("Project Type", project_intelligence["Project Type"])
+    project_2.metric("Methodology", project_intelligence["Methodology"])
+    project_3.metric(
+        "Value Readiness",
+        f"{project_intelligence['Readiness %']:.1f}%",
+    )
 
-    st.markdown(f"**Risk focus:** {sector_intelligence['Risk Focus']}")
-    st.subheader("Sector-Specific Value Priorities")
-    for priority in sector_intelligence["Priorities"]:
+    st.markdown(f"**Risk focus:** {project_intelligence['Risk Focus']}")
+    st.subheader("Value Engineering Priorities")
+    for priority in project_intelligence["Priorities"]:
         st.markdown(f"- {priority}")
 
-    sector_matrix = pd.DataFrame(
+    value_matrix = pd.DataFrame(
         [
             {
-                "Sector": "Construction",
-                "Primary Functions": "Deliver scope, quality, safety, schedule, and lifecycle value",
-                "Live Data": "Progress, labor, equipment, weather, procurement",
-                "Value Decisions": "Materials, suppliers, sequencing, contingency",
+                "Value Engineering Area": "Function Analysis",
+                "Project Question": "Which required functions must be protected?",
+                "Decision Output": "Function priority and preservation actions",
             },
             {
-                "Sector": "Energy",
-                "Primary Functions": "Reliable generation, safe delivery, efficiency, and availability",
-                "Live Data": "Generation, grid load, asset health, temperature, alarms",
-                "Value Decisions": "Maintenance, outage timing, efficiency, replacement",
+                "Value Engineering Area": "Lifecycle Cost",
+                "Project Question": "Which alternative creates the best long-term value?",
+                "Decision Output": "Ranked alternatives and lifecycle cost",
             },
             {
-                "Sector": "Manufacturing",
-                "Primary Functions": "Throughput, quality, availability, safety, and unit cost",
-                "Live Data": "Production rate, yield, vibration, downtime, energy",
-                "Value Decisions": "Maintenance, line balancing, inventory, changeover",
+                "Value Engineering Area": "Schedule and Risk",
+                "Project Question": "Which decision may delay the critical path?",
+                "Decision Output": "Early warning, risk score, and mitigation",
+            },
+            {
+                "Value Engineering Area": "Resources and Procurement",
+                "Project Question": "Where could labor or supply constraints reduce value?",
+                "Decision Output": "Resource and supplier recovery actions",
             },
         ]
     )
-    st.dataframe(sector_matrix, use_container_width=True, hide_index=True)
+    st.dataframe(value_matrix, use_container_width=True, hide_index=True)
 
 
 # =========================================================
@@ -4637,7 +4606,7 @@ with tabs[11]:
         <div class="section-banner">
             <b>MARSAD AI Assistant</b><br>
             Ask questions about project delay, risks, materials, costs,
-            live digital-twin readings, energy, or manufacturing.
+            live digital-twin readings, costs, resources, or Value Engineering decisions.
         </div>
         """,
         unsafe_allow_html=True,
@@ -4654,19 +4623,19 @@ with tabs[11]:
     quick_question = st.selectbox(
         "Quick question",
         [
-            "اختر سؤالًا أو اكتبي سؤالك بالأسفل",
-            "ما أعلى خطر في المشروع؟",
-            "كم احتمال تأخر المشروع؟",
-            "ما أفضل مادة ولماذا؟",
-            "كيف حالة التوأم الرقمي الآن؟",
-            "ما احتمال تجاوز الميزانية؟",
-            "كيف تخدم المنصة قطاع الطاقة أو التصنيع؟",
+            "Select a question or type your own below",
+            "What is the highest project risk?",
+            "What is the probability of project delay?",
+            "Which material alternative provides the best value and why?",
+            "What is the current digital-twin status?",
+            "What is the probability of budget overrun?",
+            "How does the platform support Value Engineering decisions?",
         ],
         key="assistant_quick_question",
     )
     typed_question = st.text_area(
-        "اسألي مساعد مرصد",
-        placeholder="مثال: لماذا ارتفع احتمال التأخير وما الإجراء الأفضل؟",
+        "Ask MARSAD Assistant",
+        placeholder="Example: Why did the delay probability increase, and what is the best response?",
         key="assistant_typed_question",
     )
 
@@ -4688,12 +4657,11 @@ with tabs[11]:
 
     if ask_button:
         question = typed_question.strip()
-        if not question and not quick_question.startswith("اختر"):
+        if not question and not quick_question.startswith("Select"): 
             question = quick_question
         if question:
             answer = answer_marsad_question(
                 question=question,
-                sector=selected_sector,
                 health=health,
                 best_material=best_material,
                 risk_results=risk_results,
@@ -4704,7 +4672,7 @@ with tabs[11]:
                 {"question": question, "answer": answer, "time": datetime.now()}
             )
         else:
-            st.warning("اكتبي سؤالًا أولًا.")
+            st.warning("Please enter a question first.")
 
     for message in reversed(st.session_state["marsad_chat_history"]):
         with st.chat_message("user"):
@@ -4869,7 +4837,7 @@ The current model estimates a project success probability of
 
 st.caption(
     "MARSAD Value Engineering MVP with supervised ML model comparison, "
-    "live-ready digital twin ingestion, sector intelligence for construction, "
-    "energy and manufacturing, and a context-aware AI assistant. Production "
+    "live-ready project digital twin ingestion, Project Value Intelligence, "
+    "and a context-aware AI assistant. Production "
     "deployment still requires authorized enterprise data sources and validation."
 )
