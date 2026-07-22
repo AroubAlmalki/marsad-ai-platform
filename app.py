@@ -288,6 +288,7 @@ border: none !important;
         }
 
         footer { visibility: hidden; }
+   
     </style>
     """,
     unsafe_allow_html=True,
@@ -1999,7 +2000,7 @@ MARSAD_COLOR_SEQUENCE = [
     "#C69A5B",  # sand
     "#C69A5B",  # light sand
     "#C69A5B",  # deep sand
-    "#C69A5B",  # warm sand
+    "#C8A46B",  # warm sand
     "#006C35",  # Saudi flag green
     "#8F73B9",  # lavender
 ]
