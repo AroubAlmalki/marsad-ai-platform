@@ -54,7 +54,7 @@ st.markdown(
             --sand: #1B8640;
             --sand-light: #1B8640;
             --sand-dark: #1B8640;
-            --white: #1B8640;
+            --white: #FFFFFF;
         }
 
         /* Lavender stone / carved 3D background */
