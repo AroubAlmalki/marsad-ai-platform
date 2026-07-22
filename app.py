@@ -288,6 +288,38 @@ border: none !important;
         }
 
         footer { visibility: hidden; }
+        /* Remove black tab scroll areas */
+.stTabs [data-baseweb="tab-list"],
+.stTabs [data-baseweb="tab-border"],
+.stTabs [data-baseweb="tab-highlight"],
+.stTabs div[role="tablist"],
+.stTabs div[role="tablist"] > div,
+.stTabs button,
+.stTabs svg {
+background-color: #8F73B9 !important;
+color: #FFFFFF !important;
+border-color: transparent !important;
+box-shadow: none !important;
+}
+
+/* Right and left tab navigation containers */
+.stTabs [data-testid="stElementToolbar"],
+.stTabs button[aria-label*="left" i],
+.stTabs button[aria-label*="right" i],
+.stTabs button[title*="left" i],
+.stTabs button[title*="right" i] {
+background: #8F73B9 !important;
+color: #FFFFFF !important;
+}
+
+/* Prevent dark gradient at the tab edges */
+.stTabs::before,
+.stTabs::after,
+.stTabs [role="tablist"]::before,
+.stTabs [role="tablist"]::after {
+background: #8F73B9 !important;
+background-image: none !important;
+}
     </style>
     """,
     unsafe_allow_html=True,
