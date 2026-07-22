@@ -145,14 +145,19 @@ st.markdown(
 
         .stTabs [data-baseweb="tab-list"] {
             gap: 8px;
-            background: rgba(101,74,145,.62);
+            background: rgba(101,74,145,.62)!important;
             padding: 8px;
             border-radius: 16px;
             border: 1px solid rgba(255,255,255,.28);
             flex-wrap: wrap;
             box-shadow: inset 0 1px 0 rgba(255,255,255,.13);
         }
-
+button[aria-label="Scroll left"],
+button[aria-label="Scroll right"] {
+background: #8F73B9 !important;
+color: white !important;
+border: none !important;
+}
         .stTabs [data-baseweb="tab"] {
             background: linear-gradient(145deg, rgba(148,121,187,.90), rgba(112,82,155,.90));
             border: 1px solid rgba(255,255,255,.30);
