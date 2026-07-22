@@ -2905,8 +2905,8 @@ with tabs[0]:
                 gauge={
                     "axis": {
                         "range": [0, 100],
-                        "tickcolor": "#FFFFFF",
-                        "tickfont": {"color": "#FFFFFF"},
+                        "tickcolor": "#1B8640",
+                        "tickfont": {"color": "#1B8640"},
                     },
                     "bar": {"color": "#006C35", "thickness": 0.30},
                     "bgcolor": "#6D47A3",
