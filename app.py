@@ -1996,10 +1996,10 @@ def answer_marsad_question(
 # MARSAD CHART THEME — LAVENDER STONE, SAND, AND SAUDI GREEN
 # =========================================================
 MARSAD_COLOR_SEQUENCE = [
-    "#C8A46B",  # sand
-    "#C8A46B",  # light sand
-    "#C8A46B",  # deep sand
-    "#C8A46B",  # warm sand
+    "#C69A5B",  # sand
+    "#C69A5B",  # light sand
+    "#C69A5B",  # deep sand
+    "#C69A5B",  # warm sand
     "#006C35",  # Saudi flag green
     "#8F73B9",  # lavender
 ]
