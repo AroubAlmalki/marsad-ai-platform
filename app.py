@@ -1,5 +1,8 @@
 import io
+import json
+from datetime import datetime, timedelta
 from typing import Dict, List
+from urllib.request import urlopen
 
 import numpy as np
 import pandas as pd
@@ -7,8 +10,21 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 import streamlit as st
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.metrics import accuracy_score, mean_absolute_error
+from sklearn.ensemble import (
+    GradientBoostingClassifier,
+    GradientBoostingRegressor,
+    RandomForestClassifier,
+    RandomForestRegressor,
+)
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    mean_absolute_error,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from sklearn.model_selection import train_test_split
 
 
@@ -1524,7 +1540,7 @@ def create_synthetic_schedule_training_data(
 
 @st.cache_resource
 def train_delay_models() -> Dict[str, object]:
-    """Train lightweight supervised models and return validation evidence."""
+    """Train, compare, and select supervised models with validation evidence."""
     training_data = create_synthetic_schedule_training_data()
     X = training_data[ML_FEATURES]
     y_class = training_data["Project Delayed"]
@@ -1546,31 +1562,98 @@ def train_delay_models() -> Dict[str, object]:
         stratify=y_class,
     )
 
-    classifier = RandomForestClassifier(
-        n_estimators=220,
-        max_depth=10,
-        min_samples_leaf=3,
-        random_state=42,
-        class_weight="balanced",
-    )
-    regressor = RandomForestRegressor(
-        n_estimators=220,
-        max_depth=11,
-        min_samples_leaf=3,
-        random_state=42,
-    )
+    classifier_candidates = {
+        "Random Forest": RandomForestClassifier(
+            n_estimators=220,
+            max_depth=10,
+            min_samples_leaf=3,
+            random_state=42,
+            class_weight="balanced",
+        ),
+        "Gradient Boosting": GradientBoostingClassifier(
+            n_estimators=160,
+            learning_rate=0.05,
+            max_depth=3,
+            random_state=42,
+        ),
+    }
+    regressor_candidates = {
+        "Random Forest": RandomForestRegressor(
+            n_estimators=220,
+            max_depth=11,
+            min_samples_leaf=3,
+            random_state=42,
+        ),
+        "Gradient Boosting": GradientBoostingRegressor(
+            n_estimators=180,
+            learning_rate=0.045,
+            max_depth=3,
+            random_state=42,
+            loss="huber",
+        ),
+    }
 
-    classifier.fit(X_train, y_class_train)
-    regressor.fit(X_train, y_days_train)
+    classifier_rows = []
+    trained_classifiers = {}
+    for name, model in classifier_candidates.items():
+        model.fit(X_train, y_class_train)
+        prediction = model.predict(X_test)
+        probability = model.predict_proba(X_test)[:, 1]
+        trained_classifiers[name] = model
+        classifier_rows.append(
+            {
+                "Model": name,
+                "Accuracy": accuracy_score(y_class_test, prediction),
+                "Precision": precision_score(y_class_test, prediction, zero_division=0),
+                "Recall": recall_score(y_class_test, prediction, zero_division=0),
+                "F1 Score": f1_score(y_class_test, prediction, zero_division=0),
+                "ROC AUC": roc_auc_score(y_class_test, probability),
+            }
+        )
 
+    classifier_comparison = pd.DataFrame(classifier_rows).sort_values(
+        ["ROC AUC", "F1 Score"], ascending=False
+    ).reset_index(drop=True)
+    best_classifier_name = str(classifier_comparison.iloc[0]["Model"])
+    classifier = trained_classifiers[best_classifier_name]
     class_prediction = classifier.predict(X_test)
-    day_prediction = regressor.predict(X_test)
+
+    regressor_rows = []
+    trained_regressors = {}
+    for name, model in regressor_candidates.items():
+        model.fit(X_train, y_days_train)
+        prediction = model.predict(X_test)
+        trained_regressors[name] = model
+        regressor_rows.append(
+            {
+                "Model": name,
+                "MAE Days": mean_absolute_error(y_days_test, prediction),
+            }
+        )
+
+    regressor_comparison = pd.DataFrame(regressor_rows).sort_values(
+        "MAE Days", ascending=True
+    ).reset_index(drop=True)
+    best_regressor_name = str(regressor_comparison.iloc[0]["Model"])
+    regressor = trained_regressors[best_regressor_name]
+
+    selected_metrics = classifier_comparison.iloc[0]
+    cm = confusion_matrix(y_class_test, class_prediction)
 
     return {
         "classifier": classifier,
         "regressor": regressor,
-        "accuracy": accuracy_score(y_class_test, class_prediction),
-        "mae": mean_absolute_error(y_days_test, day_prediction),
+        "classifier_name": best_classifier_name,
+        "regressor_name": best_regressor_name,
+        "accuracy": float(selected_metrics["Accuracy"]),
+        "precision": float(selected_metrics["Precision"]),
+        "recall": float(selected_metrics["Recall"]),
+        "f1": float(selected_metrics["F1 Score"]),
+        "roc_auc": float(selected_metrics["ROC AUC"]),
+        "mae": float(regressor_comparison.iloc[0]["MAE Days"]),
+        "confusion_matrix": cm,
+        "classifier_comparison": classifier_comparison,
+        "regressor_comparison": regressor_comparison,
         "training_rows": len(training_data),
         "data": training_data,
     }
@@ -1650,10 +1733,259 @@ def predict_project_delay(input_values: Dict[str, float]) -> Dict[str, object]:
         "Feature Importance": importance,
         "Recommendations": recommendations,
         "Model Accuracy": bundle["accuracy"] * 100,
+        "Model Precision": bundle["precision"] * 100,
+        "Model Recall": bundle["recall"] * 100,
+        "Model F1": bundle["f1"] * 100,
+        "Model ROC AUC": bundle["roc_auc"] * 100,
         "Model MAE": bundle["mae"],
+        "Classifier Name": bundle["classifier_name"],
+        "Regressor Name": bundle["regressor_name"],
         "Training Rows": bundle["training_rows"],
     }
 
+
+
+# =========================================================
+# LIVE DIGITAL TWIN, SECTOR INTELLIGENCE, AND AI ASSISTANT
+# =========================================================
+SECTOR_CONFIG = {
+    "Construction": {
+        "asset": "Construction Project",
+        "kpis": ["Progress %", "Workforce Availability %", "Equipment Health %", "Energy Load %"],
+        "risk_focus": "schedule, labor, procurement, equipment, weather, and quality",
+    },
+    "Energy": {
+        "asset": "Energy Facility",
+        "kpis": ["Generation Availability %", "Grid Load %", "Equipment Health %", "Energy Efficiency %"],
+        "risk_focus": "generation availability, grid demand, equipment reliability, fuel, and safety",
+    },
+    "Manufacturing": {
+        "asset": "Manufacturing Plant",
+        "kpis": ["Production Rate %", "Quality Yield %", "Equipment Health %", "Energy Efficiency %"],
+        "risk_focus": "throughput, downtime, quality yield, maintenance, inventory, and energy",
+    },
+}
+
+
+def create_live_twin_data(sector: str, points: int = 48) -> pd.DataFrame:
+    """Create a realistic timestamped telemetry stream for the demonstration twin."""
+    rng = np.random.default_rng(42 + list(SECTOR_CONFIG).index(sector))
+    timestamps = pd.date_range(
+        end=pd.Timestamp.now().floor("min"), periods=points, freq="30min"
+    )
+    base_progress = np.linspace(38, 44, points)
+
+    if sector == "Energy":
+        primary_name = "Generation Availability %"
+        secondary_name = "Grid Load %"
+        primary = np.clip(92 + rng.normal(0, 2.2, points), 70, 100)
+        secondary = np.clip(74 + 12 * np.sin(np.linspace(0, 3.5, points)) + rng.normal(0, 3, points), 35, 100)
+    elif sector == "Manufacturing":
+        primary_name = "Production Rate %"
+        secondary_name = "Quality Yield %"
+        primary = np.clip(86 + rng.normal(0, 4.0, points), 55, 105)
+        secondary = np.clip(94 + rng.normal(0, 1.8, points), 80, 100)
+    else:
+        primary_name = "Progress %"
+        secondary_name = "Workforce Availability %"
+        primary = np.clip(base_progress + rng.normal(0, 0.35, points), 0, 100)
+        secondary = np.clip(84 + rng.normal(0, 4.5, points), 55, 105)
+
+    return pd.DataFrame(
+        {
+            "Timestamp": timestamps,
+            primary_name: primary,
+            secondary_name: secondary,
+            "Equipment Health %": np.clip(90 + rng.normal(0, 3.2, points), 60, 100),
+            "Energy Efficiency %": np.clip(82 + rng.normal(0, 4.0, points), 50, 100),
+            "Temperature C": np.clip(36 + rng.normal(0, 4.5, points), 18, 55),
+            "Vibration Index": np.clip(0.34 + rng.normal(0, 0.09, points), 0.05, 0.95),
+            "Open Alerts": rng.integers(0, 5, points),
+        }
+    )
+
+
+def normalize_live_twin_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    if "Timestamp" not in result.columns:
+        result.insert(0, "Timestamp", pd.date_range(end=pd.Timestamp.now(), periods=len(result), freq="30min"))
+    result["Timestamp"] = pd.to_datetime(result["Timestamp"], errors="coerce")
+    result["Timestamp"] = result["Timestamp"].fillna(pd.Timestamp.now())
+    return result.sort_values("Timestamp").reset_index(drop=True)
+
+
+def fetch_live_json(url: str) -> pd.DataFrame:
+    """Read JSON telemetry from an endpoint returning a list or a records object."""
+    with urlopen(url, timeout=8) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if isinstance(payload, dict):
+        for key in ["data", "records", "telemetry", "items"]:
+            if key in payload and isinstance(payload[key], list):
+                payload = payload[key]
+                break
+        else:
+            payload = [payload]
+    if not isinstance(payload, list):
+        raise ValueError("The endpoint must return a JSON list or an object containing records.")
+    return normalize_live_twin_columns(pd.DataFrame(payload))
+
+
+def analyze_live_twin(frame: pd.DataFrame, sector: str) -> Dict[str, object]:
+    frame = normalize_live_twin_columns(frame)
+    latest = frame.iloc[-1]
+    numeric = frame.select_dtypes(include=[np.number])
+
+    equipment_health = safe_float(latest.get("Equipment Health %", 85), 85)
+    energy_efficiency = safe_float(latest.get("Energy Efficiency %", 80), 80)
+    vibration = safe_float(latest.get("Vibration Index", 0.3), 0.3)
+    open_alerts = safe_float(latest.get("Open Alerts", 0), 0)
+
+    anomaly_score = np.clip(
+        0.34 * max(0, 85 - equipment_health) / 35
+        + 0.24 * max(0, 78 - energy_efficiency) / 35
+        + 0.26 * max(0, vibration - 0.35) / 0.55
+        + 0.16 * min(open_alerts / 5, 1),
+        0,
+        1,
+    )
+
+    if anomaly_score >= 0.65:
+        status = "Critical"
+    elif anomaly_score >= 0.42:
+        status = "High"
+    elif anomaly_score >= 0.22:
+        status = "Medium"
+    else:
+        status = "Stable"
+
+    trend_rows = []
+    for column in numeric.columns:
+        if len(frame) >= 6:
+            recent = safe_float(frame[column].tail(3).mean())
+            previous = safe_float(frame[column].tail(6).head(3).mean())
+            trend_rows.append({"KPI": column, "Latest": safe_float(latest[column]), "Recent Change": recent - previous})
+
+    actions = []
+    if equipment_health < 82:
+        actions.append("Inspect the weakest equipment and create a condition-based maintenance work order.")
+    if vibration > 0.55:
+        actions.append("Escalate the vibration anomaly and reduce operating load until inspection is complete.")
+    if energy_efficiency < 75:
+        actions.append("Run an energy-loss review and compare operating settings against the best recent period.")
+    if open_alerts >= 3:
+        actions.append("Prioritize and assign owners to the open digital-twin alerts before the next shift.")
+    if not actions:
+        actions.append("Continue live monitoring; no urgent deviation is detected in the latest telemetry.")
+
+    return {
+        "Latest Timestamp": latest["Timestamp"],
+        "Status": status,
+        "Anomaly Score": anomaly_score * 100,
+        "Equipment Health %": equipment_health,
+        "Energy Efficiency %": energy_efficiency,
+        "Open Alerts": int(open_alerts),
+        "Trends": pd.DataFrame(trend_rows),
+        "Actions": actions,
+        "Sector": sector,
+    }
+
+
+def build_sector_intelligence(sector: str, live_result: Dict[str, object], health: Dict[str, float]) -> Dict[str, object]:
+    if sector == "Energy":
+        priorities = [
+            "Protect generation availability and critical electrical assets.",
+            "Reduce technical losses and peak-load exposure.",
+            "Compare maintenance alternatives by outage cost and lifecycle value.",
+        ]
+    elif sector == "Manufacturing":
+        priorities = [
+            "Protect production throughput and first-pass quality yield.",
+            "Predict equipment downtime before it interrupts the line.",
+            "Optimize inventory, maintenance, energy, and changeover decisions.",
+        ]
+    else:
+        priorities = [
+            "Protect critical-path activities and supplier lead times.",
+            "Optimize lifecycle value of materials and systems.",
+            "Coordinate labor, equipment, cost, weather, and quality risks.",
+        ]
+
+    readiness = np.clip(
+        0.55 * (100 - safe_float(live_result["Anomaly Score"]))
+        + 0.45 * safe_float(health["Project Success Probability"]),
+        0,
+        100,
+    )
+    return {
+        "Sector": sector,
+        "Asset": SECTOR_CONFIG[sector]["asset"],
+        "Readiness %": readiness,
+        "Risk Focus": SECTOR_CONFIG[sector]["risk_focus"],
+        "Priorities": priorities,
+    }
+
+
+def answer_marsad_question(
+    question: str,
+    sector: str,
+    health: Dict[str, float],
+    best_material: pd.Series,
+    risk_results: pd.DataFrame,
+    live_result: Dict[str, object],
+    ml_result: Dict[str, object] | None = None,
+) -> str:
+    """Context-aware assistant for the MVP without requiring an external API key."""
+    q = question.strip().lower()
+    highest_risk = risk_results.iloc[0]
+    parts = []
+
+    if any(word in q for word in ["تأخير", "delay", "schedule"]):
+        parts.append(
+            f"احتمال تجاوز الجدول الحالي هو {health['Schedule Overrun Probability']:.1f}%، "
+            f"والتأخير المرجح من سجل المخاطر {health['Expected Delay Days']:.1f} يوم."
+        )
+        if ml_result:
+            parts.append(
+                f"نموذج التعلم الآلي يتوقع احتمال تأخير {ml_result['Delay Probability']:.1f}% "
+                f"وبنحو {ml_result['Predicted Delay Days']:.1f} يوم."
+            )
+    if any(word in q for word in ["خطر", "مخاطر", "risk"]):
+        parts.append(
+            f"أعلى خطر حالي هو: {highest_risk['Risk Description']}، "
+            f"ومؤشره {highest_risk['Proactive Risk Index']:.1f}/100. "
+            f"الإجراء المقترح: {highest_risk['Recommended Response']}"
+        )
+    if any(word in q for word in ["مادة", "مواد", "material", "بديل"]):
+        parts.append(
+            f"البديل الأعلى قيمة حاليًا هو {best_material['Material Name']} "
+            f"بمؤشر قيمة {best_material['AI Value Index']:.1f}/100 "
+            f"وتكلفة دورة حياة {best_material['Lifecycle Cost SAR']:,.0f} ريال."
+        )
+    if any(word in q for word in ["توأم", "حي", "live", "sensor", "حساس"]):
+        parts.append(
+            f"حالة التوأم الرقمي الحية لقطاع {sector}: {live_result['Status']}، "
+            f"ومؤشر الشذوذ {live_result['Anomaly Score']:.1f}/100، "
+            f"وصحة المعدات {live_result['Equipment Health %']:.1f}%."
+        )
+    if any(word in q for word in ["تكلفة", "ميزانية", "cost", "budget"]):
+        parts.append(
+            f"احتمال تجاوز الميزانية {health['Budget Overrun Probability']:.1f}%، "
+            f"والخسارة المالية المتوقعة باحتمالات المخاطر {health['Expected Loss SAR']:,.0f} ريال."
+        )
+    if any(word in q for word in ["طاقة", "energy", "مصنع", "تصنيع", "manufacturing"]):
+        parts.append(
+            f"وضع القطاع المحدد هو {sector}. تركّز المنصة على {SECTOR_CONFIG[sector]['risk_focus']}."
+        )
+
+    if not parts:
+        parts.append(
+            f"ملخص مرصد: نجاح المشروع {health['Project Success Probability']:.1f}%، "
+            f"الخطر الكلي {health['Overall Risk Index']:.1f}/100، "
+            f"وحالة التوأم الرقمي {live_result['Status']}. "
+            "اسأليني عن التأخير، المخاطر، المواد، التكلفة، التوأم الرقمي، الطاقة أو التصنيع."
+        )
+
+    return "\n\n".join(parts)
 
 # =========================================================
 # MARSAD CHART THEME — LAVENDER STONE, SAND, AND SAUDI GREEN
@@ -2195,6 +2527,12 @@ default_data = get_sample_data()
 with st.sidebar:
     st.header("Data Management")
 
+    selected_sector = st.selectbox(
+        "Operating Sector",
+        ["Construction", "Energy", "Manufacturing"],
+        help="The same MARSAD engine adapts its live KPIs and recommendations to the selected sector.",
+    )
+
     template_file = create_excel_template(default_data)
 
     st.download_button(
@@ -2279,13 +2617,30 @@ except Exception as error:
     st.info("The application returned to sample data.")
     data = default_data
 
-project = data["Project"]
-environment = data["Environment"]
-activities = data["Activities"]
-materials = data["Materials"]
-suppliers = data["Suppliers"]
-risks = data["Risks"]
-resources = data["Resources"]
+data_source_key = (
+    f"{uploaded_file.name}-{uploaded_file.size}"
+    if uploaded_file is not None and not use_sample_data
+    else "sample-data"
+)
+
+if (
+    "marsad_active_data" not in st.session_state
+    or st.session_state.get("marsad_data_source") != data_source_key
+):
+    st.session_state["marsad_active_data"] = {
+        sheet_name: dataframe.copy()
+        for sheet_name, dataframe in data.items()
+    }
+    st.session_state["marsad_data_source"] = data_source_key
+
+active_data = st.session_state["marsad_active_data"]
+project = active_data["Project"]
+environment = active_data["Environment"]
+activities = active_data["Activities"]
+materials = active_data["Materials"]
+suppliers = active_data["Suppliers"]
+risks = active_data["Risks"]
+resources = active_data["Resources"]
 
 weights = {
     "Cost": weight_cost,
@@ -2334,6 +2689,13 @@ recommendations = generate_recommendations(
     risk_results=risk_results,
     schedule_results=schedule_results,
 )
+
+live_state_key = f"marsad_live_data_{selected_sector}"
+if live_state_key not in st.session_state:
+    st.session_state[live_state_key] = create_live_twin_data(selected_sector)
+live_twin_data = st.session_state[live_state_key]
+live_result = analyze_live_twin(live_twin_data, selected_sector)
+sector_intelligence = build_sector_intelligence(selected_sector, live_result, health)
 
 
 st.markdown(
@@ -2413,6 +2775,9 @@ tabs = st.tabs(
         "Value DNA",
         "AI Value Engineer",
         "ML Delay Predictor",
+        "Live Digital Twin",
+        "Sector Intelligence",
+        "MARSAD AI Assistant",
         "Reports",
     ]
 )
@@ -2628,43 +2993,95 @@ with tabs[1]:
         project,
         use_container_width=True,
         num_rows="dynamic",
+        key="edited_project_table",
     )
 
     edited_environment = data_tabs[1].data_editor(
         environment,
         use_container_width=True,
         num_rows="dynamic",
+        key="edited_environment_table",
     )
 
     edited_activities = data_tabs[2].data_editor(
         activities,
         use_container_width=True,
         num_rows="dynamic",
+        key="edited_activities_table",
     )
 
     edited_materials = data_tabs[3].data_editor(
         materials,
         use_container_width=True,
         num_rows="dynamic",
+        key="edited_materials_table",
     )
 
     edited_suppliers = data_tabs[4].data_editor(
         suppliers,
         use_container_width=True,
         num_rows="dynamic",
+        key="edited_suppliers_table",
     )
 
     edited_risks = data_tabs[5].data_editor(
         risks,
         use_container_width=True,
         num_rows="dynamic",
+        key="edited_risks_table",
     )
 
     edited_resources = data_tabs[6].data_editor(
         resources,
         use_container_width=True,
         num_rows="dynamic",
+        key="edited_resources_table",
     )
+
+    apply_col_1, apply_col_2 = st.columns(2)
+    with apply_col_1:
+        apply_changes = st.button(
+            "Apply Changes and Recalculate",
+            use_container_width=True,
+            key="apply_data_center_changes",
+        )
+    with apply_col_2:
+        reset_changes = st.button(
+            "Reset to Uploaded Data",
+            use_container_width=True,
+            key="reset_data_center_changes",
+        )
+
+    if apply_changes:
+        updated_data = {
+            "Project": edited_project.copy(),
+            "Environment": edited_environment.copy(),
+            "Activities": edited_activities.copy(),
+            "Materials": edited_materials.copy(),
+            "Suppliers": edited_suppliers.copy(),
+            "Risks": edited_risks.copy(),
+            "Resources": edited_resources.copy(),
+        }
+        empty_sheets = [name for name, frame in updated_data.items() if frame.empty]
+        if empty_sheets:
+            st.error("These sheets cannot be empty: " + ", ".join(empty_sheets))
+        else:
+            st.session_state["marsad_active_data"] = updated_data
+            st.session_state["data_update_message"] = (
+                "Changes applied. All dashboards and analyses were recalculated."
+            )
+            st.rerun()
+
+    if reset_changes:
+        st.session_state["marsad_active_data"] = {
+            sheet_name: dataframe.copy()
+            for sheet_name, dataframe in data.items()
+        }
+        st.session_state["data_update_message"] = "Data reset to the uploaded or sample source."
+        st.rerun()
+
+    if "data_update_message" in st.session_state:
+        st.success(st.session_state.pop("data_update_message"))
 
     edited_file = export_excel(
         {
@@ -3805,19 +4222,33 @@ with tabs[8]:
     )
 
     model_bundle = train_delay_models()
-    evidence_1, evidence_2, evidence_3 = st.columns(3)
-    evidence_1.metric(
-        "Validation Accuracy",
-        f"{model_bundle['accuracy'] * 100:.1f}%",
+    evidence_1, evidence_2, evidence_3, evidence_4, evidence_5 = st.columns(5)
+    evidence_1.metric("Accuracy", f"{model_bundle['accuracy'] * 100:.1f}%")
+    evidence_2.metric("F1 Score", f"{model_bundle['f1'] * 100:.1f}%")
+    evidence_3.metric("ROC AUC", f"{model_bundle['roc_auc'] * 100:.1f}%")
+    evidence_4.metric("Delay-Day MAE", f"{model_bundle['mae']:.1f} days")
+    evidence_5.metric("Training Records", f"{model_bundle['training_rows']:,}")
+
+    st.caption(
+        f"Selected classifier: {model_bundle['classifier_name']} | "
+        f"Selected regressor: {model_bundle['regressor_name']}"
     )
-    evidence_2.metric(
-        "Delay-Day MAE",
-        f"{model_bundle['mae']:.1f} days",
-    )
-    evidence_3.metric(
-        "Synthetic Training Records",
-        f"{model_bundle['training_rows']:,}",
-    )
+
+    model_compare_col_1, model_compare_col_2 = st.columns(2)
+    with model_compare_col_1:
+        st.dataframe(
+            model_bundle["classifier_comparison"].style.format(
+                {"Accuracy": "{:.1%}", "Precision": "{:.1%}", "Recall": "{:.1%}", "F1 Score": "{:.1%}", "ROC AUC": "{:.1%}"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    with model_compare_col_2:
+        st.dataframe(
+            model_bundle["regressor_comparison"].style.format({"MAE Days": "{:.2f}"}),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     with st.expander("How the AI model works", expanded=True):
         st.markdown(
@@ -3930,6 +4361,7 @@ with tabs[8]:
         }
 
         ml_result = predict_project_delay(ml_inputs)
+        st.session_state["latest_ml_result"] = ml_result
 
         output_1, output_2, output_3 = st.columns(3)
         output_1.metric(
@@ -3984,7 +4416,13 @@ with tabs[8]:
                     "Predicted Delay Days",
                     "Risk Level",
                     "Validation Accuracy",
+                    "Validation Precision",
+                    "Validation Recall",
+                    "Validation F1",
+                    "Validation ROC AUC",
                     "Validation MAE Days",
+                    "Selected Classifier",
+                    "Selected Regressor",
                     "Synthetic Training Records",
                 ],
                 "Value": [
@@ -3992,7 +4430,13 @@ with tabs[8]:
                     f"{ml_result['Predicted Delay Days']:.2f}",
                     ml_result["Risk Level"],
                     f"{ml_result['Model Accuracy']:.2f}%",
+                    f"{ml_result['Model Precision']:.2f}%",
+                    f"{ml_result['Model Recall']:.2f}%",
+                    f"{ml_result['Model F1']:.2f}%",
+                    f"{ml_result['Model ROC AUC']:.2f}%",
                     f"{ml_result['Model MAE']:.2f}",
+                    ml_result["Classifier Name"],
+                    ml_result["Regressor Name"],
                     ml_result["Training Rows"],
                 ],
             }
@@ -4031,10 +4475,242 @@ with tabs[8]:
         )
 
 
+
+# =========================================================
+# LIVE DIGITAL TWIN
+# =========================================================
+with tabs[9]:
+    st.markdown(
+        """
+        <div class="section-banner">
+            <b>Live Digital Twin Connector</b><br>
+            Connect timestamped BIM, IoT, equipment, production, or energy telemetry
+            to MARSAD. The MVP supports a live simulator, CSV upload, and JSON API endpoint.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.warning(
+        "The included stream is simulated for demonstration. Upload a real telemetry CSV "
+        "or provide an authorized JSON endpoint to use real live data."
+    )
+
+    source_col_1, source_col_2, source_col_3 = st.columns(3)
+    with source_col_1:
+        if st.button("Refresh Live Simulator", use_container_width=True):
+            st.session_state[live_state_key] = create_live_twin_data(
+                selected_sector, points=48
+            )
+            st.rerun()
+    with source_col_2:
+        twin_csv = st.file_uploader(
+            "Upload telemetry CSV",
+            type=["csv"],
+            key="live_twin_csv",
+        )
+        if twin_csv is not None:
+            try:
+                st.session_state[live_state_key] = normalize_live_twin_columns(
+                    pd.read_csv(twin_csv)
+                )
+                st.success("Telemetry CSV connected.")
+                st.rerun()
+            except Exception as error:
+                st.error(f"Unable to read telemetry CSV: {error}")
+    with source_col_3:
+        api_url = st.text_input(
+            "Authorized JSON API endpoint",
+            placeholder="https://example.com/api/telemetry",
+            key="live_twin_api_url",
+        )
+        if st.button("Connect API", use_container_width=True):
+            try:
+                if not api_url.strip():
+                    raise ValueError("Enter an endpoint URL first.")
+                st.session_state[live_state_key] = fetch_live_json(api_url.strip())
+                st.success("Live API data connected.")
+                st.rerun()
+            except Exception as error:
+                st.error(f"Unable to connect to the endpoint: {error}")
+
+    live_twin_data = st.session_state[live_state_key]
+    live_result = analyze_live_twin(live_twin_data, selected_sector)
+
+    live_1, live_2, live_3, live_4 = st.columns(4)
+    live_1.metric("Twin Status", live_result["Status"])
+    live_2.metric("Anomaly Score", f"{live_result['Anomaly Score']:.1f}/100")
+    live_3.metric("Equipment Health", f"{live_result['Equipment Health %']:.1f}%")
+    live_4.metric("Open Alerts", live_result["Open Alerts"])
+
+    numeric_columns = live_twin_data.select_dtypes(include=[np.number]).columns.tolist()
+    selected_live_kpi = st.selectbox(
+        "Live KPI",
+        numeric_columns,
+        key="selected_live_kpi",
+    )
+    live_chart = px.line(
+        live_twin_data,
+        x="Timestamp",
+        y=selected_live_kpi,
+        markers=True,
+        title=f"Live Digital Twin — {selected_live_kpi}",
+    )
+    st.plotly_chart(apply_marsad_chart_theme(live_chart), use_container_width=True)
+
+    st.subheader("Automatic Twin Actions")
+    for action in live_result["Actions"]:
+        st.markdown(f"- {action}")
+
+    st.dataframe(live_result["Trends"], use_container_width=True, hide_index=True)
+    st.download_button(
+        "Download Current Twin Telemetry",
+        data=live_twin_data.to_csv(index=False).encode("utf-8"),
+        file_name=f"marsad_{selected_sector.lower()}_live_twin.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+
+# =========================================================
+# SECTOR INTELLIGENCE
+# =========================================================
+with tabs[10]:
+    st.markdown(
+        f"""
+        <div class="section-banner">
+            <b>MARSAD for {selected_sector}</b><br>
+            The common Value Engineering core is adapted to construction,
+            energy facilities, and manufacturing plants.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    sector_1, sector_2, sector_3 = st.columns(3)
+    sector_1.metric("Selected Sector", sector_intelligence["Sector"])
+    sector_2.metric("Asset Type", sector_intelligence["Asset"])
+    sector_3.metric("Operational Readiness", f"{sector_intelligence['Readiness %']:.1f}%")
+
+    st.markdown(f"**Risk focus:** {sector_intelligence['Risk Focus']}")
+    st.subheader("Sector-Specific Value Priorities")
+    for priority in sector_intelligence["Priorities"]:
+        st.markdown(f"- {priority}")
+
+    sector_matrix = pd.DataFrame(
+        [
+            {
+                "Sector": "Construction",
+                "Primary Functions": "Deliver scope, quality, safety, schedule, and lifecycle value",
+                "Live Data": "Progress, labor, equipment, weather, procurement",
+                "Value Decisions": "Materials, suppliers, sequencing, contingency",
+            },
+            {
+                "Sector": "Energy",
+                "Primary Functions": "Reliable generation, safe delivery, efficiency, and availability",
+                "Live Data": "Generation, grid load, asset health, temperature, alarms",
+                "Value Decisions": "Maintenance, outage timing, efficiency, replacement",
+            },
+            {
+                "Sector": "Manufacturing",
+                "Primary Functions": "Throughput, quality, availability, safety, and unit cost",
+                "Live Data": "Production rate, yield, vibration, downtime, energy",
+                "Value Decisions": "Maintenance, line balancing, inventory, changeover",
+            },
+        ]
+    )
+    st.dataframe(sector_matrix, use_container_width=True, hide_index=True)
+
+
+# =========================================================
+# MARSAD AI ASSISTANT
+# =========================================================
+with tabs[11]:
+    st.markdown(
+        """
+        <div class="section-banner">
+            <b>MARSAD AI Assistant</b><br>
+            Ask questions about project delay, risks, materials, costs,
+            live digital-twin readings, energy, or manufacturing.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.caption(
+        "This MVP assistant answers from the current MARSAD calculations and live data. "
+        "It does not send confidential project data to an external service."
+    )
+
+    if "marsad_chat_history" not in st.session_state:
+        st.session_state["marsad_chat_history"] = []
+
+    quick_question = st.selectbox(
+        "Quick question",
+        [
+            "اختر سؤالًا أو اكتبي سؤالك بالأسفل",
+            "ما أعلى خطر في المشروع؟",
+            "كم احتمال تأخر المشروع؟",
+            "ما أفضل مادة ولماذا؟",
+            "كيف حالة التوأم الرقمي الآن؟",
+            "ما احتمال تجاوز الميزانية؟",
+            "كيف تخدم المنصة قطاع الطاقة أو التصنيع؟",
+        ],
+        key="assistant_quick_question",
+    )
+    typed_question = st.text_area(
+        "اسألي مساعد مرصد",
+        placeholder="مثال: لماذا ارتفع احتمال التأخير وما الإجراء الأفضل؟",
+        key="assistant_typed_question",
+    )
+
+    assistant_col_1, assistant_col_2 = st.columns([3, 1])
+    ask_button = assistant_col_1.button(
+        "Ask MARSAD Assistant",
+        use_container_width=True,
+        key="ask_marsad_assistant",
+    )
+    clear_button = assistant_col_2.button(
+        "Clear Chat",
+        use_container_width=True,
+        key="clear_marsad_chat",
+    )
+
+    if clear_button:
+        st.session_state["marsad_chat_history"] = []
+        st.rerun()
+
+    if ask_button:
+        question = typed_question.strip()
+        if not question and not quick_question.startswith("اختر"):
+            question = quick_question
+        if question:
+            answer = answer_marsad_question(
+                question=question,
+                sector=selected_sector,
+                health=health,
+                best_material=best_material,
+                risk_results=risk_results,
+                live_result=live_result,
+                ml_result=st.session_state.get("latest_ml_result"),
+            )
+            st.session_state["marsad_chat_history"].append(
+                {"question": question, "answer": answer, "time": datetime.now()}
+            )
+        else:
+            st.warning("اكتبي سؤالًا أولًا.")
+
+    for message in reversed(st.session_state["marsad_chat_history"]):
+        with st.chat_message("user"):
+            st.write(message["question"])
+        with st.chat_message("assistant"):
+            st.write(message["answer"])
+
+
 # =========================================================
 # REPORTS
 # =========================================================
-with tabs[9]:
+with tabs[12]:
     st.markdown(
         """
         <div class="section-banner">
@@ -4186,7 +4862,8 @@ The current model estimates a project success probability of
 
 
 st.caption(
-    "MARSAD Value Engineering MVP. Future integrations may include BIM, "
-    "Primavera P6, Power BI, weather APIs, IoT sensors, ERP systems, "
-    "cost databases, and supplier portals."
+    "MARSAD Value Engineering MVP with supervised ML model comparison, "
+    "live-ready digital twin ingestion, sector intelligence for construction, "
+    "energy and manufacturing, and a context-aware AI assistant. Production "
+    "deployment still requires authorized enterprise data sources and validation."
 )
