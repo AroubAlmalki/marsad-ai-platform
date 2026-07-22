@@ -2909,7 +2909,7 @@ with tabs[0]:
                         "tickfont": {"color": "#1B8640"},
                     },
                     "bar": {"color": "#006C35", "thickness": 0.30},
-                    "bgcolor": "#C8A46B",
+                    "bgcolor": "#C69A5B",
                     "bordercolor": "rgba(255,255,255,0.55)",
                     "borderwidth": 2,
                     "steps": [
