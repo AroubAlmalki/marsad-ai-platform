@@ -1,5 +1,6 @@
-import io
+mport io
 import json
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List
 from urllib.request import urlopen
@@ -10,6 +11,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 import streamlit as st
+
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 from sklearn.ensemble import (
     GradientBoostingClassifier,
     GradientBoostingRegressor,
@@ -1904,6 +1910,141 @@ def build_project_value_intelligence(
         "Risk Focus": PROJECT_CONFIG["risk_focus"],
         "Priorities": priorities,
     }
+
+
+
+def get_openai_api_key() -> str:
+    """Load the API key securely from Streamlit Secrets or the environment."""
+    try:
+        secret_key = st.secrets.get("OPENAI_API_KEY", "")
+    except Exception:
+        secret_key = ""
+    return str(secret_key or os.getenv("OPENAI_API_KEY", "")).strip()
+
+
+def build_marsad_ai_context(
+    health: Dict[str, float],
+    best_material: pd.Series,
+    risk_results: pd.DataFrame,
+    live_result: Dict[str, object],
+    ml_result: Dict[str, object] | None = None,
+) -> str:
+    """Create a compact, grounded project context for the generative assistant."""
+    top_risks = risk_results.head(5)[
+        [
+            "Risk Description",
+            "Risk Level",
+            "Proactive Risk Index",
+            "Adjusted Probability",
+            "Expected Monetary Loss SAR",
+            "Weighted Expected Delay Days",
+            "Recommended Response",
+        ]
+    ].copy()
+
+    context = {
+        "platform": "MARSAD AI Value Engineering Platform",
+        "methodology": "Value Engineering for construction projects",
+        "project_health": {
+            key: round(safe_float(value), 2)
+            for key, value in health.items()
+        },
+        "recommended_material": {
+            "name": str(best_material.get("Material Name", "Unknown")),
+            "category": str(best_material.get("Category", "Unknown")),
+            "ai_value_index": round(safe_float(best_material.get("AI Value Index")), 2),
+            "decision_regret_index": round(safe_float(best_material.get("Decision Regret Index")), 2),
+            "lifecycle_cost_sar": round(safe_float(best_material.get("Lifecycle Cost SAR")), 2),
+            "annual_energy_cost_sar": round(safe_float(best_material.get("Annual Energy Cost SAR")), 2),
+            "lifecycle_carbon_kgco2e": round(safe_float(best_material.get("Lifecycle Carbon kgCO2e")), 2),
+            "supply_chain_risk": round(safe_float(best_material.get("Supply Chain Risk")), 4),
+        },
+        "top_risks": top_risks.to_dict(orient="records"),
+        "digital_twin": {
+            "status": str(live_result.get("Status", "Unknown")),
+            "anomaly_score": round(safe_float(live_result.get("Anomaly Score")), 2),
+            "equipment_health_percent": round(safe_float(live_result.get("Equipment Health %")), 2),
+            "quality_compliance_percent": round(safe_float(live_result.get("Quality Compliance %")), 2),
+            "open_alerts": int(safe_float(live_result.get("Open Alerts"))),
+            "recommended_actions": list(live_result.get("Actions", [])),
+        },
+    }
+
+    if ml_result:
+        context["machine_learning_delay_prediction"] = {
+            "delay_probability_percent": round(safe_float(ml_result.get("Delay Probability")), 2),
+            "predicted_delay_days": round(safe_float(ml_result.get("Predicted Delay Days")), 2),
+            "risk_level": str(ml_result.get("Risk Level", "Unknown")),
+            "recommendations": list(ml_result.get("Recommendations", [])),
+            "classifier": str(ml_result.get("Classifier Name", "Unknown")),
+            "regressor": str(ml_result.get("Regressor Name", "Unknown")),
+        }
+
+    return json.dumps(context, ensure_ascii=False, default=str)
+
+
+def ask_openai_marsad(
+    question: str,
+    health: Dict[str, float],
+    best_material: pd.Series,
+    risk_results: pd.DataFrame,
+    live_result: Dict[str, object],
+    ml_result: Dict[str, object] | None = None,
+    chat_history: List[Dict[str, object]] | None = None,
+) -> str:
+    """Answer open-ended questions using OpenAI and current MARSAD calculations."""
+    api_key = get_openai_api_key()
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY is not configured.")
+    if OpenAI is None:
+        raise ImportError("The openai package is not installed.")
+
+    client = OpenAI(api_key=api_key)
+    project_context = build_marsad_ai_context(
+        health=health,
+        best_material=best_material,
+        risk_results=risk_results,
+        live_result=live_result,
+        ml_result=ml_result,
+    )
+
+    history_items = []
+    for item in (chat_history or [])[-6:]:
+        history_items.extend(
+            [
+                {"role": "user", "content": str(item.get("question", ""))},
+                {"role": "assistant", "content": str(item.get("answer", ""))},
+            ]
+        )
+
+    instructions = """
+You are MARSAD AI Copilot, a professional Value Engineering and project-risk assistant.
+Answer the user's question using the supplied live MARSAD project context first.
+You may also answer general questions about project management, construction, Value Engineering,
+risk, lifecycle cost, materials, procurement, resources, and digital twins.
+Clearly distinguish calculated project facts from general professional guidance.
+Never invent project numbers. If the project context does not contain a requested fact, say so.
+Give concise, decision-ready answers with: finding, explanation, and recommended action.
+Reply in the same language used by the user.
+""".strip()
+
+    response = client.responses.create(
+        model="gpt-5-mini",
+        instructions=instructions,
+        input=[
+            {
+                "role": "developer",
+                "content": "CURRENT MARSAD PROJECT CONTEXT:\n" + project_context,
+            },
+            *history_items,
+            {"role": "user", "content": question},
+        ],
+        store=False,
+    )
+    answer = (response.output_text or "").strip()
+    if not answer:
+        raise RuntimeError("The AI service returned an empty response.")
+    return answer
 
 
 def answer_marsad_question(
@@ -4612,9 +4753,24 @@ with tabs[11]:
         unsafe_allow_html=True,
     )
 
-    st.caption(
-        "This MVP assistant answers from the current MARSAD calculations and live data. "
-        "It does not send confidential project data to an external service."
+    api_key_ready = bool(get_openai_api_key()) and OpenAI is not None
+    if api_key_ready:
+        st.success(
+            "Generative AI is connected. The assistant can answer open-ended questions "
+            "using the current MARSAD calculations and project context."
+        )
+    else:
+        st.info(
+            "Generative AI is not configured yet. MARSAD will use its built-in "
+            "explainable assistant until OPENAI_API_KEY is added to Streamlit Secrets."
+        )
+
+    assistant_mode = st.radio(
+        "Assistant mode",
+        ["Generative AI", "Built-in Explainable Assistant"],
+        horizontal=True,
+        index=0 if api_key_ready else 1,
+        key="marsad_assistant_mode",
     )
 
     if "marsad_chat_history" not in st.session_state:
@@ -4660,16 +4816,50 @@ with tabs[11]:
         if not question and not quick_question.startswith("Select"): 
             question = quick_question
         if question:
-            answer = answer_marsad_question(
-                question=question,
-                health=health,
-                best_material=best_material,
-                risk_results=risk_results,
-                live_result=live_result,
-                ml_result=st.session_state.get("latest_ml_result"),
-            )
+            try:
+                if assistant_mode == "Generative AI":
+                    answer = ask_openai_marsad(
+                        question=question,
+                        health=health,
+                        best_material=best_material,
+                        risk_results=risk_results,
+                        live_result=live_result,
+                        ml_result=st.session_state.get("latest_ml_result"),
+                        chat_history=st.session_state["marsad_chat_history"],
+                    )
+                    answer_source = "Generative AI"
+                else:
+                    answer = answer_marsad_question(
+                        question=question,
+                        health=health,
+                        best_material=best_material,
+                        risk_results=risk_results,
+                        live_result=live_result,
+                        ml_result=st.session_state.get("latest_ml_result"),
+                    )
+                    answer_source = "Built-in Assistant"
+            except Exception as exc:
+                answer = answer_marsad_question(
+                    question=question,
+                    health=health,
+                    best_material=best_material,
+                    risk_results=risk_results,
+                    live_result=live_result,
+                    ml_result=st.session_state.get("latest_ml_result"),
+                )
+                answer_source = "Built-in Fallback"
+                st.warning(
+                    "The external AI connection was unavailable, so MARSAD used its "
+                    f"built-in assistant instead. Details: {exc}"
+                )
+
             st.session_state["marsad_chat_history"].append(
-                {"question": question, "answer": answer, "time": datetime.now()}
+                {
+                    "question": question,
+                    "answer": answer,
+                    "source": answer_source,
+                    "time": datetime.now(),
+                }
             )
         else:
             st.warning("Please enter a question first.")
@@ -4679,6 +4869,7 @@ with tabs[11]:
             st.write(message["question"])
         with st.chat_message("assistant"):
             st.write(message["answer"])
+            st.caption(f"Source: {message.get('source', 'Built-in Assistant')}")
 
 
 # =========================================================
