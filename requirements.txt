@@ -1,6 +1,7 @@
 streamlit
-pandas
 numpy
+pandas
 plotly
-openpyxl
 scikit-learn
+openpyxl
+openai>=1.0.0
