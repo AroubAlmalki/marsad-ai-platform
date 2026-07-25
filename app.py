@@ -2384,7 +2384,7 @@ def build_value_engineering_action_plan(
                     "Function Status": "Function must be verified",
                 },
                 {
-                    "Priority": 2,
+                    "priority": 2,
                     "Action": (
                         "Replace high-maintenance options with alternatives that "
                         "have lower lifecycle ownership cost."
