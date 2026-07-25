@@ -83,12 +83,12 @@ st.markdown(
             inset: 0;
             pointer-events: none;
             z-index: 0;
-            opacity: .38;
+            opacity: 0;
             background:
                 linear-gradient(135deg, rgba(255,255,255,.08), transparent 38%),
                 radial-gradient(ellipse at 50% 0%, rgba(255,255,255,.12), transparent 55%),
                 radial-gradient(ellipse at 50% 100%, rgba(57,34,87,.18), transparent 60%);
-            mix-blend-mode: soft-light;
+            mix-blend-mode: normal;
         }
 
         .block-container {
