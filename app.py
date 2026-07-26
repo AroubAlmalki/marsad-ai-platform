@@ -11,11 +11,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 import streamlit as st
-
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
 from sklearn.ensemble import (
     GradientBoostingClassifier,
     GradientBoostingRegressor,
@@ -1912,141 +1907,6 @@ def build_project_value_intelligence(
     }
 
 
-
-def get_openai_api_key() -> str:
-    """Load the API key securely from Streamlit Secrets or the environment."""
-    try:
-        secret_key = st.secrets.get("OPENAI_API_KEY", "")
-    except Exception:
-        secret_key = ""
-    return str(secret_key or os.getenv("OPENAI_API_KEY", "")).strip()
-
-
-def build_marsad_ai_context(
-    health: Dict[str, float],
-    best_material: pd.Series,
-    risk_results: pd.DataFrame,
-    live_result: Dict[str, object],
-    ml_result: Dict[str, object] | None = None,
-) -> str:
-    """Create a compact, grounded project context for the generative assistant."""
-    top_risks = risk_results.head(5)[
-        [
-            "Risk Description",
-            "Risk Level",
-            "Proactive Risk Index",
-            "Adjusted Probability",
-            "Expected Monetary Loss SAR",
-            "Weighted Expected Delay Days",
-            "Recommended Response",
-        ]
-    ].copy()
-
-    context = {
-        "platform": "MARSAD AI Value Engineering Platform",
-        "methodology": "Value Engineering for construction projects",
-        "project_health": {
-            key: round(safe_float(value), 2)
-            for key, value in health.items()
-        },
-        "recommended_material": {
-            "name": str(best_material.get("Material Name", "Unknown")),
-            "category": str(best_material.get("Category", "Unknown")),
-            "ai_value_index": round(safe_float(best_material.get("AI Value Index")), 2),
-            "decision_regret_index": round(safe_float(best_material.get("Decision Regret Index")), 2),
-            "lifecycle_cost_sar": round(safe_float(best_material.get("Lifecycle Cost SAR")), 2),
-            "annual_energy_cost_sar": round(safe_float(best_material.get("Annual Energy Cost SAR")), 2),
-            "lifecycle_carbon_kgco2e": round(safe_float(best_material.get("Lifecycle Carbon kgCO2e")), 2),
-            "supply_chain_risk": round(safe_float(best_material.get("Supply Chain Risk")), 4),
-        },
-        "top_risks": top_risks.to_dict(orient="records"),
-        "digital_twin": {
-            "status": str(live_result.get("Status", "Unknown")),
-            "anomaly_score": round(safe_float(live_result.get("Anomaly Score")), 2),
-            "equipment_health_percent": round(safe_float(live_result.get("Equipment Health %")), 2),
-            "quality_compliance_percent": round(safe_float(live_result.get("Quality Compliance %")), 2),
-            "open_alerts": int(safe_float(live_result.get("Open Alerts"))),
-            "recommended_actions": list(live_result.get("Actions", [])),
-        },
-    }
-
-    if ml_result:
-        context["machine_learning_delay_prediction"] = {
-            "delay_probability_percent": round(safe_float(ml_result.get("Delay Probability")), 2),
-            "predicted_delay_days": round(safe_float(ml_result.get("Predicted Delay Days")), 2),
-            "risk_level": str(ml_result.get("Risk Level", "Unknown")),
-            "recommendations": list(ml_result.get("Recommendations", [])),
-            "classifier": str(ml_result.get("Classifier Name", "Unknown")),
-            "regressor": str(ml_result.get("Regressor Name", "Unknown")),
-        }
-
-    return json.dumps(context, ensure_ascii=False, default=str)
-
-
-def ask_openai_marsad(
-    question: str,
-    health: Dict[str, float],
-    best_material: pd.Series,
-    risk_results: pd.DataFrame,
-    live_result: Dict[str, object],
-    ml_result: Dict[str, object] | None = None,
-    chat_history: List[Dict[str, object]] | None = None,
-) -> str:
-    """Answer open-ended questions using OpenAI and current MARSAD calculations."""
-    api_key = get_openai_api_key()
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY is not configured.")
-    if OpenAI is None:
-        raise ImportError("The openai package is not installed.")
-
-    client = OpenAI(api_key=api_key)
-    project_context = build_marsad_ai_context(
-        health=health,
-        best_material=best_material,
-        risk_results=risk_results,
-        live_result=live_result,
-        ml_result=ml_result,
-    )
-
-    history_items = []
-    for item in (chat_history or [])[-6:]:
-        history_items.extend(
-            [
-                {"role": "user", "content": str(item.get("question", ""))},
-                {"role": "assistant", "content": str(item.get("answer", ""))},
-            ]
-        )
-
-    instructions = """
-You are MARSAD AI Copilot, a professional Value Engineering and project-risk assistant.
-Answer the user's question using the supplied live MARSAD project context first.
-You may also answer general questions about project management, construction, Value Engineering,
-risk, lifecycle cost, materials, procurement, resources, and digital twins.
-Clearly distinguish calculated project facts from general professional guidance.
-Never invent project numbers. If the project context does not contain a requested fact, say so.
-Give concise, decision-ready answers with: finding, explanation, and recommended action.
-Reply in the same language used by the user.
-""".strip()
-
-    response = client.responses.create(
-        model="gpt-5-mini",
-        instructions=instructions,
-        input=[
-            {
-                "role": "developer",
-                "content": "CURRENT MARSAD PROJECT CONTEXT:\n" + project_context,
-            },
-            *history_items,
-            {"role": "user", "content": question},
-        ],
-        store=False,
-    )
-    answer = (response.output_text or "").strip()
-    if not answer:
-        raise RuntimeError("The AI service returned an empty response.")
-    return answer
-
-
 def answer_marsad_question(
     question: str,
     health: Dict[str, float],
@@ -2102,6 +1962,270 @@ def answer_marsad_question(
         )
 
     return "\n\n".join(parts)
+
+
+# =========================================================
+# VALUE ENGINEERING WORKSHOP — FUNCTION / FAST / ALTERNATIVES
+# =========================================================
+def build_function_analysis(
+    functions: pd.DataFrame,
+    function_weight: float = 0.45,
+    cost_weight: float = 0.30,
+    risk_weight: float = 0.25,
+) -> pd.DataFrame:
+    """Score project functions and identify value-improvement priorities."""
+    df = functions.copy()
+    required = [
+        "Function ID", "Function", "Function Type", "Importance 1-10",
+        "Current Performance 1-10", "Target Performance 1-10",
+        "Current Cost SAR", "Failure Risk 1-10",
+    ]
+    for col in required:
+        if col not in df.columns:
+            raise ValueError(f"Missing function-analysis column: {col}")
+
+    numeric_cols = [
+        "Importance 1-10", "Current Performance 1-10",
+        "Target Performance 1-10", "Current Cost SAR", "Failure Risk 1-10",
+    ]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    df["Performance Gap"] = np.maximum(
+        df["Target Performance 1-10"] - df["Current Performance 1-10"], 0
+    )
+    df["Function Performance %"] = np.where(
+        df["Target Performance 1-10"] > 0,
+        100 * df["Current Performance 1-10"] / df["Target Performance 1-10"],
+        0,
+    ).clip(0, 120)
+    max_cost = max(float(df["Current Cost SAR"].max()), 1.0)
+    df["Cost Burden %"] = 100 * df["Current Cost SAR"] / max_cost
+    df["Function Criticality %"] = (
+        55 * df["Importance 1-10"] / 10
+        + 25 * df["Failure Risk 1-10"] / 10
+        + 20 * df["Performance Gap"] / 10
+    ).clip(0, 100)
+    total_weight = max(function_weight + cost_weight + risk_weight, 1e-9)
+    df["Value Opportunity Score"] = (
+        function_weight * df["Performance Gap"] / 10
+        + cost_weight * df["Cost Burden %"] / 100
+        + risk_weight * df["Failure Risk 1-10"] / 10
+    ) * 100 / total_weight
+    df["Function Status"] = np.select(
+        [
+            df["Function Performance %"] < 75,
+            df["Function Performance %"] < 95,
+        ],
+        ["At Risk", "Needs Improvement"],
+        default="Protected",
+    )
+    df["VE Recommendation"] = np.select(
+        [
+            df["Function Status"].eq("At Risk"),
+            df["Value Opportunity Score"] >= 60,
+            df["Value Opportunity Score"] >= 35,
+        ],
+        [
+            "Restore required function before approving cost reduction.",
+            "Prioritize for creative alternatives and lifecycle-cost study.",
+            "Review specifications and remove unnecessary cost.",
+        ],
+        default="Maintain and monitor the current solution.",
+    )
+    return df.sort_values(
+        ["Value Opportunity Score", "Function Criticality %"], ascending=False
+    ).reset_index(drop=True)
+
+
+def build_fast_diagram(functions: pd.DataFrame) -> pd.DataFrame:
+    """Create a practical FAST relationship table from function records."""
+    df = functions.copy().reset_index(drop=True)
+    if df.empty:
+        return pd.DataFrame(columns=["Order", "Why?", "Function", "How?", "Type"])
+    rows = []
+    for i, row in df.iterrows():
+        previous_function = "Project Need" if i == 0 else str(df.iloc[i - 1]["Function"])
+        next_function = "Operational Outcome" if i == len(df) - 1 else str(df.iloc[i + 1]["Function"])
+        rows.append(
+            {
+                "Order": i + 1,
+                "Why?": previous_function,
+                "Function": str(row["Function"]),
+                "How?": next_function,
+                "Type": str(row.get("Function Type", "Secondary")),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def evaluate_ve_alternatives(
+    alternatives: pd.DataFrame,
+    weights: Dict[str, float],
+) -> pd.DataFrame:
+    """Evaluate alternatives by function, lifecycle cost, risk, time and sustainability."""
+    df = alternatives.copy()
+    required = [
+        "Alternative", "Function Performance 1-10", "Initial Cost SAR",
+        "Lifecycle Cost SAR", "Implementation Time Days", "Risk 1-10",
+        "Quality 1-10", "Sustainability 1-10",
+    ]
+    for col in required:
+        if col not in df.columns:
+            raise ValueError(f"Missing alternative-evaluation column: {col}")
+    numeric_cols = required[1:]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    df["Function Score"] = normalize(df["Function Performance 1-10"])
+    df["Lifecycle Cost Score"] = normalize(df["Lifecycle Cost SAR"], inverse=True)
+    df["Time Score"] = normalize(df["Implementation Time Days"], inverse=True)
+    df["Risk Score"] = normalize(df["Risk 1-10"], inverse=True)
+    df["Quality Score"] = normalize(df["Quality 1-10"])
+    df["Sustainability Score"] = normalize(df["Sustainability 1-10"])
+
+    score_map = {
+        "Function": "Function Score",
+        "Lifecycle Cost": "Lifecycle Cost Score",
+        "Time": "Time Score",
+        "Risk": "Risk Score",
+        "Quality": "Quality Score",
+        "Sustainability": "Sustainability Score",
+    }
+    total_weight = max(sum(weights.values()), 1e-9)
+    weighted = sum(weights[k] * df[v] for k, v in score_map.items()) / total_weight
+    df["VE Weighted Score"] = 100 * weighted
+    df["Function Preservation %"] = (10 * df["Function Performance 1-10"]).clip(0, 100)
+    df["Value Index"] = np.where(
+        df["Lifecycle Cost SAR"] > 0,
+        1000000 * df["Function Performance 1-10"] / df["Lifecycle Cost SAR"],
+        0,
+    )
+    base_cost = float(df.iloc[0]["Lifecycle Cost SAR"]) if len(df) else 0
+    df["Lifecycle Saving SAR"] = base_cost - df["Lifecycle Cost SAR"]
+    df["Lifecycle Saving %"] = np.where(
+        base_cost > 0, 100 * df["Lifecycle Saving SAR"] / base_cost, 0
+    )
+    df["Function Preservation Check"] = np.where(
+        df["Function Performance 1-10"] >= 8, "Pass", "Review"
+    )
+    df["Executive Decision"] = np.select(
+        [
+            (df["VE Weighted Score"] >= 75) & (df["Function Preservation Check"] == "Pass"),
+            (df["VE Weighted Score"] >= 55) & (df["Function Preservation Check"] == "Pass"),
+            df["Function Preservation Check"] == "Review",
+        ],
+        ["Approve", "Approve with Conditions", "Return for Function Review"],
+        default="Reject",
+    )
+    return df.sort_values(
+        ["VE Weighted Score", "Value Index"], ascending=False
+    ).reset_index(drop=True)
+
+
+def generate_local_ve_ideas(problem: str, required_function: str) -> List[str]:
+    """Fallback ideas when no OpenAI API key is configured."""
+    problem_lower = problem.lower()
+    ideas = [
+        f"Simplify the specification while preserving the required function: {required_function}.",
+        "Standardize components and reduce unnecessary variety.",
+        "Compare modular or prefabricated delivery against the current method.",
+        "Use a locally available equivalent with verified technical performance.",
+        "Separate essential requirements from preferences and non-value-added features.",
+        "Review maintenance access, replacement frequency, and lifecycle operating cost.",
+    ]
+    if "cost" in problem_lower or "budget" in problem_lower:
+        ideas.append("Bundle procurement quantities and negotiate lifecycle-based commercial terms.")
+    if "delay" in problem_lower or "schedule" in problem_lower:
+        ideas.append("Re-sequence installation and pre-approve an equivalent backup alternative.")
+    if "supplier" in problem_lower or "material" in problem_lower:
+        ideas.append("Dual-source the critical item and validate a functionally equivalent local option.")
+    return ideas[:8]
+
+
+def call_openai_ve_ideas(problem: str, required_function: str, constraints: str) -> str:
+    """Use OpenAI when configured; otherwise return transparent local VE ideas."""
+    api_key = ""
+    try:
+        api_key = st.secrets.get("OPENAI_API_KEY", "")
+    except Exception:
+        api_key = ""
+    api_key = api_key or os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        return "\n".join(f"{i+1}. {idea}" for i, idea in enumerate(
+            generate_local_ve_ideas(problem, required_function)
+        ))
+
+    prompt = f"""
+You are a senior Value Engineering specialist. Generate practical alternatives only.
+Problem: {problem}
+Required function that must be preserved: {required_function}
+Constraints: {constraints or 'No additional constraints provided'}
+Return 6 alternatives. For each include: idea, function-preservation logic,
+lifecycle-value benefit, implementation risk, and validation required.
+Do not recommend the cheapest option unless the required function is preserved.
+""".strip()
+    payload = json.dumps(
+        {
+            "model": "gpt-4.1-mini",
+            "messages": [
+                {"role": "system", "content": "You are a Value Engineering consultant."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.4,
+        }
+    ).encode("utf-8")
+    request = __import__("urllib.request", fromlist=["Request"]).Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=45) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        return result["choices"][0]["message"]["content"]
+    except Exception as exc:
+        fallback = "\n".join(f"{i+1}. {idea}" for i, idea in enumerate(
+            generate_local_ve_ideas(problem, required_function)
+        ))
+        return f"OpenAI connection was unavailable ({exc}). Local VE ideas:\n\n{fallback}"
+
+
+def default_ve_functions() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            ["F01", "Control indoor heat gain", "Basic", 10, 7, 9, 4200000, 9],
+            ["F02", "Protect occupants from weather", "Basic", 10, 9, 10, 3100000, 10],
+            ["F03", "Provide durable external finish", "Secondary", 8, 7, 9, 2800000, 7],
+            ["F04", "Reduce maintenance demand", "Secondary", 7, 6, 8, 1900000, 6],
+            ["F05", "Support architectural identity", "Secondary", 6, 8, 8, 1600000, 4],
+        ],
+        columns=[
+            "Function ID", "Function", "Function Type", "Importance 1-10",
+            "Current Performance 1-10", "Target Performance 1-10",
+            "Current Cost SAR", "Failure Risk 1-10",
+        ],
+    )
+
+
+def default_ve_alternatives() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            ["Current Design", 9.0, 5200000, 8900000, 90, 4.0, 9.0, 6.0],
+            ["Optimized Low-E System", 9.2, 4850000, 7600000, 82, 3.5, 9.1, 8.2],
+            ["Local High-Performance System", 8.6, 4300000, 7100000, 70, 3.2, 8.5, 8.8],
+            ["Simplified Standard System", 7.4, 3850000, 6900000, 62, 5.5, 7.2, 7.0],
+        ],
+        columns=[
+            "Alternative", "Function Performance 1-10", "Initial Cost SAR",
+            "Lifecycle Cost SAR", "Implementation Time Days", "Risk 1-10",
+            "Quality 1-10", "Sustainability 1-10",
+        ],
+    )
 
 # =========================================================
 # MARSAD CHART THEME — LAVENDER STONE, SAND, AND SAUDI GREEN
@@ -2384,7 +2508,7 @@ def build_value_engineering_action_plan(
                     "Function Status": "Function must be verified",
                 },
                 {
-                    "priority": 2,
+                    "Priority": 2,
                     "Action": (
                         "Replace high-maintenance options with alternatives that "
                         "have lower lifecycle ownership cost."
@@ -2891,6 +3015,7 @@ tabs = st.tabs(
         "Project Value Intelligence",
         "MARSAD AI Assistant",
         "Reports",
+        "VE Workshop",
     ]
 )
 
@@ -4753,24 +4878,9 @@ with tabs[11]:
         unsafe_allow_html=True,
     )
 
-    api_key_ready = bool(get_openai_api_key()) and OpenAI is not None
-    if api_key_ready:
-        st.success(
-            "Generative AI is connected. The assistant can answer open-ended questions "
-            "using the current MARSAD calculations and project context."
-        )
-    else:
-        st.info(
-            "Generative AI is not configured yet. MARSAD will use its built-in "
-            "explainable assistant until OPENAI_API_KEY is added to Streamlit Secrets."
-        )
-
-    assistant_mode = st.radio(
-        "Assistant mode",
-        ["Generative AI", "Built-in Explainable Assistant"],
-        horizontal=True,
-        index=0 if api_key_ready else 1,
-        key="marsad_assistant_mode",
+    st.caption(
+        "This MVP assistant answers from the current MARSAD calculations and live data. "
+        "It does not send confidential project data to an external service."
     )
 
     if "marsad_chat_history" not in st.session_state:
@@ -4816,50 +4926,16 @@ with tabs[11]:
         if not question and not quick_question.startswith("Select"): 
             question = quick_question
         if question:
-            try:
-                if assistant_mode == "Generative AI":
-                    answer = ask_openai_marsad(
-                        question=question,
-                        health=health,
-                        best_material=best_material,
-                        risk_results=risk_results,
-                        live_result=live_result,
-                        ml_result=st.session_state.get("latest_ml_result"),
-                        chat_history=st.session_state["marsad_chat_history"],
-                    )
-                    answer_source = "Generative AI"
-                else:
-                    answer = answer_marsad_question(
-                        question=question,
-                        health=health,
-                        best_material=best_material,
-                        risk_results=risk_results,
-                        live_result=live_result,
-                        ml_result=st.session_state.get("latest_ml_result"),
-                    )
-                    answer_source = "Built-in Assistant"
-            except Exception as exc:
-                answer = answer_marsad_question(
-                    question=question,
-                    health=health,
-                    best_material=best_material,
-                    risk_results=risk_results,
-                    live_result=live_result,
-                    ml_result=st.session_state.get("latest_ml_result"),
-                )
-                answer_source = "Built-in Fallback"
-                st.warning(
-                    "The external AI connection was unavailable, so MARSAD used its "
-                    f"built-in assistant instead. Details: {exc}"
-                )
-
+            answer = answer_marsad_question(
+                question=question,
+                health=health,
+                best_material=best_material,
+                risk_results=risk_results,
+                live_result=live_result,
+                ml_result=st.session_state.get("latest_ml_result"),
+            )
             st.session_state["marsad_chat_history"].append(
-                {
-                    "question": question,
-                    "answer": answer,
-                    "source": answer_source,
-                    "time": datetime.now(),
-                }
+                {"question": question, "answer": answer, "time": datetime.now()}
             )
         else:
             st.warning("Please enter a question first.")
@@ -4869,7 +4945,6 @@ with tabs[11]:
             st.write(message["question"])
         with st.chat_message("assistant"):
             st.write(message["answer"])
-            st.caption(f"Source: {message.get('source', 'Built-in Assistant')}")
 
 
 # =========================================================
@@ -5024,6 +5099,315 @@ The current model estimates a project success probability of
         pitch_text.strip(),
         height=260,
     )
+
+
+
+# =========================================================
+# SPECIALIZED VALUE ENGINEERING WORKSHOP
+# =========================================================
+with tabs[13]:
+    st.markdown(
+        """
+        <div class="section-banner">
+            <b>Specialized Value Engineering Workshop</b><br>
+            Complete VE workflow: information, function analysis, FAST logic,
+            creative alternatives, evaluation, function preservation,
+            lifecycle value, executive decision, and documentation.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.info(
+        "This page keeps every recommendation tied to Value Engineering. "
+        "Cost reduction is never approved unless the required function is preserved."
+    )
+
+    ve_stage_tabs = st.tabs(
+        [
+            "1. Function Analysis",
+            "2. FAST Diagram",
+            "3. AI Alternatives",
+            "4. Alternative Evaluation",
+            "5. Executive VE Report",
+        ]
+    )
+
+    if "ve_functions" not in st.session_state:
+        st.session_state["ve_functions"] = default_ve_functions()
+    if "ve_alternatives" not in st.session_state:
+        st.session_state["ve_alternatives"] = default_ve_alternatives()
+
+    with ve_stage_tabs[0]:
+        st.subheader("Function Analysis")
+        st.caption("Define functions using an active verb and measurable noun wherever possible.")
+        edited_functions = st.data_editor(
+            st.session_state["ve_functions"],
+            use_container_width=True,
+            num_rows="dynamic",
+            key="ve_function_editor",
+        )
+        st.session_state["ve_functions"] = edited_functions
+
+        weight_col_1, weight_col_2, weight_col_3 = st.columns(3)
+        function_weight = weight_col_1.slider("Performance-gap weight", 0.0, 1.0, 0.45, 0.05)
+        cost_weight = weight_col_2.slider("Cost-burden weight", 0.0, 1.0, 0.30, 0.05)
+        risk_weight = weight_col_3.slider("Failure-risk weight", 0.0, 1.0, 0.25, 0.05)
+
+        try:
+            function_results = build_function_analysis(
+                edited_functions, function_weight, cost_weight, risk_weight
+            )
+            st.session_state["ve_function_results"] = function_results
+            function_metrics = st.columns(4)
+            function_metrics[0].metric("Functions", len(function_results))
+            function_metrics[1].metric(
+                "Functions at Risk", int(function_results["Function Status"].eq("At Risk").sum())
+            )
+            function_metrics[2].metric(
+                "Average Function Performance",
+                f"{function_results['Function Performance %'].mean():.1f}%",
+            )
+            function_metrics[3].metric(
+                "Highest Opportunity",
+                f"{function_results['Value Opportunity Score'].max():.1f}/100",
+            )
+            st.dataframe(
+                function_results.style.format(
+                    {
+                        "Current Cost SAR": "{:,.0f}",
+                        "Function Performance %": "{:.1f}%",
+                        "Cost Burden %": "{:.1f}%",
+                        "Function Criticality %": "{:.1f}%",
+                        "Value Opportunity Score": "{:.1f}",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+            function_chart = px.bar(
+                function_results.sort_values("Value Opportunity Score"),
+                x="Value Opportunity Score",
+                y="Function",
+                color="Function Status",
+                orientation="h",
+                title="Value Improvement Opportunity by Function",
+            )
+            st.plotly_chart(apply_marsad_chart_theme(function_chart), use_container_width=True)
+        except Exception as exc:
+            st.error(f"Function analysis could not be calculated: {exc}")
+
+    with ve_stage_tabs[1]:
+        st.subheader("FAST Diagram Logic")
+        st.caption("Read from left to right as HOW, and from right to left as WHY.")
+        fast_source = st.session_state.get("ve_function_results", st.session_state["ve_functions"])
+        fast_table = build_fast_diagram(fast_source)
+        st.session_state["ve_fast_table"] = fast_table
+        st.dataframe(fast_table, use_container_width=True, hide_index=True)
+        if not fast_table.empty:
+            fast_fig = go.Figure()
+            for i, row in fast_table.iterrows():
+                fast_fig.add_annotation(
+                    x=i,
+                    y=0,
+                    text=f"<b>{row['Function']}</b><br>{row['Type']}",
+                    showarrow=False,
+                    bgcolor="#75599D",
+                    bordercolor="#006C35",
+                    borderwidth=2,
+                    font={"color": "white", "size": 13},
+                    width=145,
+                    height=62,
+                )
+                if i < len(fast_table) - 1:
+                    fast_fig.add_annotation(
+                        x=i + 0.5,
+                        y=0,
+                        ax=i + 0.1,
+                        ay=0,
+                        xref="x",
+                        yref="y",
+                        axref="x",
+                        ayref="y",
+                        text="HOW →",
+                        showarrow=True,
+                        arrowhead=2,
+                        font={"color": "white"},
+                    )
+            fast_fig.update_xaxes(visible=False, range=[-0.6, max(len(fast_table) - 0.4, 1)])
+            fast_fig.update_yaxes(visible=False, range=[-1, 1])
+            fast_fig.update_layout(height=330, title="FAST Function Relationship Map")
+            st.plotly_chart(apply_marsad_chart_theme(fast_fig), use_container_width=True)
+
+    with ve_stage_tabs[2]:
+        st.subheader("AI Alternative Generator")
+        idea_col_1, idea_col_2 = st.columns(2)
+        ve_problem = idea_col_1.text_area(
+            "Value Engineering Problem",
+            value="The facade package has a high lifecycle cost and a long supplier lead time.",
+            height=130,
+        )
+        required_function = idea_col_2.text_area(
+            "Required Function to Preserve",
+            value="Control heat gain, protect occupants, and maintain facade durability.",
+            height=130,
+        )
+        constraints = st.text_area(
+            "Technical, schedule, safety, or commercial constraints",
+            value="Saudi climate, local code compliance, 30-year analysis period, and no reduction in safety.",
+            height=100,
+        )
+        if st.button("Generate VE Alternatives", use_container_width=True, key="generate_ve_ideas"):
+            with st.spinner("Generating function-focused alternatives..."):
+                st.session_state["ve_ai_ideas"] = call_openai_ve_ideas(
+                    ve_problem, required_function, constraints
+                )
+        if "ve_ai_ideas" in st.session_state:
+            st.markdown(st.session_state["ve_ai_ideas"])
+            st.caption(
+                "When OPENAI_API_KEY is configured, ideas are generated through OpenAI. "
+                "Otherwise MARSAD uses its transparent local VE fallback."
+            )
+
+    with ve_stage_tabs[3]:
+        st.subheader("Alternative Evaluation Matrix")
+        alternatives_editor = st.data_editor(
+            st.session_state["ve_alternatives"],
+            use_container_width=True,
+            num_rows="dynamic",
+            key="ve_alternatives_editor",
+        )
+        st.session_state["ve_alternatives"] = alternatives_editor
+        st.markdown("#### Evaluation Weights")
+        w1, w2, w3 = st.columns(3)
+        w4, w5, w6 = st.columns(3)
+        weights = {
+            "Function": w1.slider("Function", 0, 100, 30, 5, key="ve_w_function"),
+            "Lifecycle Cost": w2.slider("Lifecycle Cost", 0, 100, 25, 5, key="ve_w_lcc"),
+            "Time": w3.slider("Time", 0, 100, 10, 5, key="ve_w_time"),
+            "Risk": w4.slider("Risk", 0, 100, 15, 5, key="ve_w_risk"),
+            "Quality": w5.slider("Quality", 0, 100, 10, 5, key="ve_w_quality"),
+            "Sustainability": w6.slider("Sustainability", 0, 100, 10, 5, key="ve_w_sustainability"),
+        }
+        try:
+            alternative_results = evaluate_ve_alternatives(alternatives_editor, weights)
+            st.session_state["ve_alternative_results"] = alternative_results
+            best_ve_option = alternative_results.iloc[0]
+            alt_metrics = st.columns(5)
+            alt_metrics[0].metric("Recommended Alternative", str(best_ve_option["Alternative"]))
+            alt_metrics[1].metric("VE Score", f"{best_ve_option['VE Weighted Score']:.1f}/100")
+            alt_metrics[2].metric("Function Preservation", best_ve_option["Function Preservation Check"])
+            alt_metrics[3].metric("Lifecycle Saving", f"{best_ve_option['Lifecycle Saving SAR']:,.0f} SAR")
+            alt_metrics[4].metric("Decision", best_ve_option["Executive Decision"])
+            st.dataframe(
+                alternative_results.style.format(
+                    {
+                        "Initial Cost SAR": "{:,.0f}",
+                        "Lifecycle Cost SAR": "{:,.0f}",
+                        "VE Weighted Score": "{:.1f}",
+                        "Function Preservation %": "{:.1f}%",
+                        "Value Index": "{:.3f}",
+                        "Lifecycle Saving SAR": "{:,.0f}",
+                        "Lifecycle Saving %": "{:.1f}%",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+            alt_chart = px.scatter(
+                alternative_results,
+                x="Lifecycle Cost SAR",
+                y="Function Performance 1-10",
+                size="VE Weighted Score",
+                color="Executive Decision",
+                hover_name="Alternative",
+                title="Function Performance versus Lifecycle Cost",
+            )
+            st.plotly_chart(apply_marsad_chart_theme(alt_chart), use_container_width=True)
+            if best_ve_option["Function Preservation Check"] == "Pass":
+                st.success(
+                    f"Recommended: {best_ve_option['Alternative']} preserves the required function "
+                    f"and achieves the highest weighted VE score."
+                )
+            else:
+                st.error(
+                    "The highest-scoring option does not yet pass the function-preservation check. "
+                    "Return it for technical validation before approval."
+                )
+        except Exception as exc:
+            st.error(f"Alternative evaluation could not be calculated: {exc}")
+
+    with ve_stage_tabs[4]:
+        st.subheader("Executive Value Engineering Report")
+        function_results = st.session_state.get("ve_function_results")
+        alternative_results = st.session_state.get("ve_alternative_results")
+        fast_table = st.session_state.get("ve_fast_table")
+        ai_ideas = st.session_state.get("ve_ai_ideas", "No AI alternatives generated yet.")
+
+        if function_results is None or alternative_results is None:
+            st.warning(
+                "Complete Function Analysis and Alternative Evaluation first to generate the final VE report."
+            )
+        else:
+            best_option = alternative_results.iloc[0]
+            highest_function = function_results.iloc[0]
+            decision = str(best_option["Executive Decision"])
+            report_summary = pd.DataFrame(
+                {
+                    "VE Report Item": [
+                        "Highest Value Opportunity Function",
+                        "Function Status",
+                        "Recommended Alternative",
+                        "Function Preservation Check",
+                        "VE Weighted Score",
+                        "Lifecycle Saving SAR",
+                        "Lifecycle Saving %",
+                        "Executive Decision",
+                    ],
+                    "Result": [
+                        highest_function["Function"],
+                        highest_function["Function Status"],
+                        best_option["Alternative"],
+                        best_option["Function Preservation Check"],
+                        f"{best_option['VE Weighted Score']:.1f}/100",
+                        f"{best_option['Lifecycle Saving SAR']:,.0f}",
+                        f"{best_option['Lifecycle Saving %']:.1f}%",
+                        decision,
+                    ],
+                }
+            )
+            st.dataframe(report_summary, use_container_width=True, hide_index=True)
+            st.markdown(
+                f"""
+                <div class="value-card">
+                    <h4>Executive VE Decision</h4>
+                    <b>{decision}: {best_option['Alternative']}</b><br><br>
+                    The alternative achieved a VE weighted score of
+                    {best_option['VE Weighted Score']:.1f}/100 and a function-preservation
+                    result of {best_option['Function Preservation Check']}.
+                    Estimated lifecycle saving is SAR {best_option['Lifecycle Saving SAR']:,.0f}
+                    ({best_option['Lifecycle Saving %']:.1f}%).
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            ve_report_file = export_excel(
+                {
+                    "VE Executive Summary": report_summary,
+                    "Function Analysis": function_results,
+                    "FAST Diagram": fast_table if fast_table is not None else pd.DataFrame(),
+                    "Alternative Evaluation": alternative_results,
+                    "AI Alternatives": pd.DataFrame({"Generated VE Ideas": [ai_ideas]}),
+                }
+            )
+            st.download_button(
+                "Download Complete VE Report",
+                data=ve_report_file,
+                file_name="marsad_complete_value_engineering_report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="download_complete_ve_report",
+            )
 
 
 st.caption(
